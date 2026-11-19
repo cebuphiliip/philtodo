@@ -19,7 +19,8 @@
   var S = {
     items: LS.get("items", {}), dirty: LS.get("dirty", {}), since: LS.get("since", ""), view: LS.get("view", "todo"),
     cat: "전체", mode: LS.get("mode", "all"), open: {}, msg: "", busy: false, local: false,
-    dq: "", dmonth: "", karea: "전체", kq: "", kmonth: "", remote: { done: null, log: null }, rbusy: false
+    dq: "", dmonth: "", karea: "전체", kq: "", kmonth: "", remote: { done: null, log: null }, rbusy: false,
+    fq: "", fk: "전체", fprev: "todo", fr: null, fbusy: false
   };
   var sess = LS.get("sess", null);
   function save() { LS.set("items", S.items); LS.set("dirty", S.dirty); LS.set("since", S.since); }
@@ -192,6 +193,122 @@
     }).catch(function (e) { S.rbusy = false; toast("검색 실패: " + koErr(e.message)); render(); });
   }
 
+  /* ---------- 🔍 전체 찾기 ----------
+     이 기기에 있는 것(열린 일 + 최근 60일)은 바로 찾고, 60일 지난 기록은 서버 pt_search 로 함께 찾는다.
+     낱말을 여러 개 넣으면 모두 들어간 것만. 제목뿐 아니라 순서·복사 문구·메모·답·주소·제안·아이디어·클실장 기록·날짜까지 본다. */
+  function terms(q) { return String(q || "").toLowerCase().split(/\s+/).filter(Boolean); }
+  function dateForms(d) {
+    if (!d) return ""; d = String(d).slice(0, 10); var p = d.split("-"); if (p.length < 3) return d;
+    return d + " " + (+p[1]) + "/" + (+p[2]) + " " + (+p[1]) + "월 " + (+p[2]) + "일";
+  }
+  function fieldsOf(x) {
+    var F = [["제목", x.title], ["설명", x.why], ["내용", x.detail]];
+    (x.steps || []).forEach(function (s, i) { F.push(["순서 " + (i + 1), s]); });
+    (x.copies || []).forEach(function (c) { F.push(["복사 문구 · " + (c.label || ""), c.text]); });
+    (x.ideas || []).forEach(function (d) { F.push([d.t === "아이디어" ? "💡 아이디어" : "실장 제안", d.text]); });
+    F.push(["내 메모", x.note]);
+    if (x.answer) F.push(["내 답", [x.answer.pick, x.answer.text].filter(Boolean).join(" / ")]);
+    var u = x.urls || {}; Object.keys(u).forEach(function (k) { F.push(["올린 주소", u[k]]); });
+    if (x.choice) F.push(["결정", (x.choice.q || "") + " " + (x.choice.opts || []).join(" / ")]);
+    (x.links || []).concat(x.images || []).forEach(function (l) { F.push(["파일", (l.label || "") + " " + (l.path || l.url || "")]); });
+    (x.fields || []).forEach(function (f) { F.push(["주소 칸", f.label]); });
+    F.push(["출처", x.src], ["끝나면 클실장이", x.after], ["분류", [x.area, x.biz, x.group, x.state, (CAT[x.cat] || {}).label].filter(Boolean).join(" ")], ["번호", x.id]);
+    return F.filter(function (f) { return f[1]; });
+  }
+  function hay(x) {
+    return (fieldsOf(x).map(function (f) { return f[1]; }).join("\n") + "\n" + [x.due, x.doneAt, x.date, x.t0 ? ymd(new Date(x.t0)) : ""].map(dateForms).join(" ")).toLowerCase();
+  }
+  function hasAll(h, ts) { return ts.every(function (t) { return h.indexOf(t) >= 0; }); }
+  var _mq = null, _mre = null;
+  function mark(html) {
+    if (S.view !== "find") return html;
+    if (_mq !== S.fq) { _mq = S.fq; var ts = terms(S.fq); _mre = ts.length ? new RegExp(ts.map(function (t) { return esc(t).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }).join("|"), "gi") : null; }
+    if (!_mre) return html;
+    return String(html).split(/(<[^>]*>)/).map(function (p, i) {
+      return i % 2 ? p : p.split(/(&#?\w+;)/).map(function (q, j) { return j % 2 ? q : q.replace(_mre, "<mark>$&</mark>"); }).join("");
+    }).join("");
+  }
+  /* 제목·설명에 안 보이는 낱말이 어디서 걸렸는지 한 줄로 보여 준다 */
+  function snip(x) {
+    var vis = ((x.title || "") + " " + (x.why || "")).toLowerCase(), ts = terms(S.fq).filter(function (t) { return vis.indexOf(t) < 0; });
+    if (!ts.length) return "";
+    var F = fieldsOf(x);
+    for (var i = 0; i < F.length; i++) {
+      if (F[i][0] === "제목" || F[i][0] === "설명") continue;
+      var s = String(F[i][1]), k = s.toLowerCase().indexOf(ts[0]);
+      if (k < 0) continue;
+      var a = Math.max(0, k - 30), b = Math.min(s.length, k + ts[0].length + 60);
+      return '<div class="hit"><b>' + esc(F[i][0]) + "</b>" + (a ? "…" : "") + mark(esc(s.slice(a, b))) + (b < s.length ? "…" : "") + "</div>";
+    }
+    return "";
+  }
+  /* 서버용 낱말: 날짜는 저장된 모양(2026-11-19)으로도 찾게 다른 표기를 '|' 로 붙인다 */
+  function srvTerm(t) {
+    var m = t.match(/^(\d{1,2})[\/.](\d{1,2})$/); if (m) return t + "|-" + ("0" + m[1]).slice(-2) + "-" + ("0" + m[2]).slice(-2);
+    m = t.match(/^(\d{1,2})월$/); if (m) return t + "|-" + ("0" + m[1]).slice(-2) + "-";
+    m = t.match(/^(\d{1,2})일$/); if (m) return t + "|-" + ("0" + m[1]).slice(-2);
+    return t;
+  }
+  var ftm = 0;
+  function findRemote() {
+    clearTimeout(ftm);
+    var q = S.fq, ts = terms(q);
+    if (!SB || !sess || !ts.length || (S.fr && S.fr.q === q && !S.fr.err)) return;
+    S.fbusy = true; render();
+    fresh().then(function () { return api("/rest/v1/rpc/pt_search", { method: "POST", auth: true, body: { terms: ts.map(srvTerm), lim: 300 } }); }).then(function (rows) {
+      if (S.fq !== q) return;
+      S.fr = { q: q, rows: (rows || []).map(function (r) { return r.data; }) }; S.fbusy = false; render();
+    }).catch(function () { if (S.fq !== q) return; S.fr = { q: q, rows: [], err: 1 }; S.fbusy = false; render(); });
+  }
+  function clearFind() { S.fq = ""; S.fr = null; S.fbusy = false; clearTimeout(ftm); var fi = $("#fq"); if (fi) fi.value = ""; }
+  function viewFind() {
+    var ts = terms(S.fq), h = "<h1>🔍 찾기</h1>";
+    if (!sess) return h + needLogin();
+    if (!ts.length) return h + '<div class="card"><p class="note">맨 위 칸에 찾을 말을 넣으세요.</p></div>';
+    var seen = {}, pool = [];
+    Object.keys(S.items).forEach(function (k) { seen[k] = 1; pool.push(S.items[k]); });
+    var fr = S.fr && S.fr.q === S.fq ? S.fr : null, more = [].concat(fr ? fr.rows : [], S.remote.done || [], S.remote.log || []);
+    more.forEach(function (x) { if (x && x.id && !seen[x.id]) { seen[x.id] = 1; pool.push(x); } });
+    var G = { todo: [], idea: [], done: [], kl: [] };
+    pool.forEach(function (x) {
+      if (x.ideas && x.kind !== "log") {
+        var base = (x.title || "") + " " + dateForms(x.t0 ? ymd(new Date(x.t0)) : "");
+        x.ideas.forEach(function (d, i) { if (hasAll((d.text + " " + base).toLowerCase(), ts)) G.idea.push({ x: x, d: d, i: i, r: (x.react || {})[i] }); });
+      }
+      if (x.kind === "idea" || !hasAll(hay(x), ts)) return;
+      if (x.kind === "task") (isOpen(x) ? G.todo : G.done).push(x);
+      else G.kl.push(x);
+    });
+    G.todo.sort(sorter);
+    G.done.sort(function (a, b) { return (b.doneAt || "").localeCompare(a.doneAt || ""); });
+    G.idea.sort(function (a, b) { return (b.x.t0 || 0) - (a.x.t0 || 0) || a.i - b.i; });
+    var KO = { ktask: 0, sess: 1, log: 2 };
+    G.kl.sort(function (a, b) { return (KO[a.kind] || 0) - (KO[b.kind] || 0) || (b.date || "").localeCompare(a.date || "") || (b.t0 || 0) - (a.t0 || 0); });
+    var total = G.todo.length + G.idea.length + G.done.length + G.kl.length, f = S.fk;
+    h += '<div class="chips">' + [["전체", total], ["할 일", G.todo.length], ["💡 아이디어", G.idea.length], ["한 일", G.done.length], ["클실장", G.kl.length]].map(function (c) {
+      return '<button class="chip' + (f === c[0] ? " on" : "") + '" data-fk="' + c[0] + '">' + c[0] + " " + c[1] + "</button>";
+    }).join("") + "</div>";
+    h += '<p class="note fsum">“' + esc(S.fq) + "” " + total + "건" + (S.fbusy ? " · 60일 지난 기록도 서버에서 찾는 중…" : fr && fr.err ? " · 서버 검색 실패(이 기기 것만)" : fr ? " · 60일 지난 기록까지 함께 찾았습니다" : "") + "</p>";
+    if (!total) return h + '<div class="empty">' + (S.fbusy ? "찾는 중…" : "“" + esc(S.fq) + "”이(가) 들어간 것이 없습니다. 낱말을 줄이거나 바꿔 보세요.") + "</div>";
+    function sec(key, title, sub, html) { if (f !== "전체" && f !== key) return ""; return '<div class="sec"><h2>' + title + '</h2><span class="cnt">' + sub + "</span></div>" + html; }
+    function cap(arr, n) { return arr.length > n ? arr.slice(0, n) : arr; }
+    if (G.todo.length) h += sec("할 일", "할 일", G.todo.length + "건", G.todo.map(card).join(""));
+    if (G.idea.length) h += sec("💡 아이디어", "💡 제안·아이디어", G.idea.length + "건", '<div class="ideas big">' + G.idea.map(function (e) {
+      var from = e.x.kind === "task" ? ' <a class="from" href="#c_' + esc(e.x.id) + '" data-act="goto" data-id="' + esc(e.x.id) + '">' + (e.x.status === "done" ? "한 일: " : "할 일: ") + mark(esc(e.x.title)) + "</a>" : ' <span class="from">' + mark(esc(e.x.kind === "idea" ? (e.x.area || "새 아이디어") : e.x.title)) + "</span>";
+      return ideaRow(e.x, e.d, e.i, e.r, from + (e.x.t0 ? ' <span class="from">' + md(ymd(new Date(e.x.t0))) + "</span>" : ""));
+    }).join("") + "</div>");
+    if (G.done.length) h += sec("한 일", "사장님이 한 일", G.done.length + "건" + (G.done.length > 100 ? " · 앞 100건" : ""), cap(G.done, 100).map(card).join(""));
+    if (G.kl.length) {
+      var KN = { ktask: "클실장 맡은 일", sess: "세션 정리", log: "클실장이 한 일" };
+      h += sec("클실장", "클실장", G.kl.length + "건" + (G.kl.length > 150 ? " · 앞 150건 — 낱말을 더 넣으면 좁혀집니다" : ""), '<div class="card list">' + cap(G.kl, 150).map(function (x) {
+        var d = x.kind === "log" ? x.date : x.due || (x.t0 ? ymd(new Date(x.t0)) : "");
+        return '<div class="row1"><div class="d">' + (d ? md(d) : "") + '</div><div class="grow"><details><summary><span class="area">' + esc(KN[x.kind] || "기록") + (x.area ? " · " + esc(x.area) : "") + "</span>" + mark(esc(x.title)) + (x.state ? ' <span class="badge">' + esc(x.state) + "</span>" : "") + "</summary>" +
+          (x.detail ? "<div>" + mark(linkify(x.detail)) + "</div>" : "") + (x.why ? '<div class="note">' + mark(esc(x.why)) + "</div>" : "") + (x.kind === "sess" ? ideasBox(x) : "") + "</details>" + snip(x) + "</div></div>";
+      }).join("") + "</div>");
+    }
+    return h;
+  }
+
   /* ---------- PC 도우미(폴더 파일) ---------- */
   function helperBase() { return S.local ? "" : (CFG.helper || "http://127.0.0.1:8790"); }
   function fileUrl(p) { return helperBase() + "/f/" + p.split("/").map(encodeURIComponent).join("/"); }
@@ -234,7 +351,7 @@
     var v = S.view;
     document.querySelectorAll(".top nav button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-view") === v); });
     var nt = $("#navTodo"); if (nt) nt.textContent = list().length;
-    var h = v === "done" ? viewDone() : v === "kl" ? viewKl() : v === "set" ? viewSet() : v === "idea" ? viewIdeas() : viewTodo();
+    var h = v === "find" ? viewFind() : v === "done" ? viewDone() : v === "kl" ? viewKl() : v === "set" ? viewSet() : v === "idea" ? viewIdeas() : viewTodo();
     var ni = $("#navIdea"); if (ni) { var fi = sess ? freshIdeas().length : 0; ni.textContent = fi; ni.style.display = fi ? "" : "none"; }
     $("#app").innerHTML = h;
     $("#ver").textContent = "필투두 " + (window.PT_BUILD || "") + (S.local ? " · PC 도우미 연결됨" : "");
@@ -275,11 +392,12 @@
     var op = !!S.open[x.id], td = today(), done = x.status === "done";
     var isNew = !done && (x.t0 || 0) > Date.now() - 864e5;
     var h = '<div class="card task' + (done ? " done" : "") + '" id="c_' + esc(x.id) + '"><div class="head"><button class="chk" data-act="toggle" data-id="' + esc(x.id) + '" title="했어요">✓</button><div class="grow" data-act="expand" data-id="' + esc(x.id) + '">';
-    h += '<div class="t">' + (isNew ? '<span class="badge new">새</span> ' : "") + esc(x.title) + "</div>";
+    h += '<div class="t">' + (isNew ? '<span class="badge new">새</span> ' : "") + (x.status === "cancel" ? '<span class="badge">취소됨</span> ' : "") + mark(esc(x.title)) + "</div>";
     h += '<div class="meta">' + catChip(x.cat) + (x.due ? '<span class="due' + (x.due < td && !done ? " late" : "") + '">' + (x.due < td && !done ? "기한 지남 " : "") + md(x.due) + (x.dueNote ? " " + esc(x.dueNote) : "") + "</span>" : "") +
       (x.mins ? "<span>약 " + x.mins + "분</span>" : "") + (x.biz ? "<span>" + esc(x.biz) + "</span>" : "") + (x.snoozeTo && x.snoozeTo > td ? "<span>" + md(x.snoozeTo) + "까지 미룸</span>" : "") +
       (x.answer ? '<span class="badge">답함</span>' : "") + (x.ideas && x.ideas.length ? '<span class="badge idea">💡 제안·아이디어 ' + x.ideas.length + "</span>" : "") + "</div>";
-    if (x.why) h += '<div class="why">' + esc(x.why) + "</div>";
+    if (x.why) h += '<div class="why">' + mark(esc(x.why)) + "</div>";
+    if (S.view === "find") h += snip(x);
     h += "</div></div>";
     if (op) h += body(x);
     return h + "</div>";
@@ -288,7 +406,7 @@
     var id = esc(x.id), h = '<div class="body">' + ideasBox(x);
     if (x.steps && x.steps.length) {
       var ck = x.checks || {};
-      h += "<h3>순서</h3><ol class=\"steps\">" + x.steps.map(function (s, i) { return '<li class="' + (ck[i] ? "ok" : "") + '"><input type="checkbox" data-act="step" data-id="' + id + '" data-i="' + i + '"' + (ck[i] ? " checked" : "") + '><span class="grow">' + linkify(s) + '</span><button class="pc" data-act="para" data-id="' + id + '" data-i="' + i + '" title="이 문단만 복사해 클실장에게 고쳐 달라고 하기">⧉</button></li>'; }).join("") + "</ol>";
+      h += "<h3>순서</h3><ol class=\"steps\">" + x.steps.map(function (s, i) { return '<li class="' + (ck[i] ? "ok" : "") + '"><input type="checkbox" data-act="step" data-id="' + id + '" data-i="' + i + '"' + (ck[i] ? " checked" : "") + '><span class="grow">' + mark(linkify(s)) + '</span><button class="pc" data-act="para" data-id="' + id + '" data-i="' + i + '" title="이 문단만 복사해 클실장에게 고쳐 달라고 하기">⧉</button></li>'; }).join("") + "</ol>";
     }
     if (x.links && x.links.length) {
       h += "<h3>바로 열기</h3><div class=\"btns\">" + x.links.map(function (l) {
@@ -298,7 +416,7 @@
       }).join("") + "</div>" + (S.local ? "" : '<p class="note">(PC) 표시는 PC에서 필투두 도우미가 켜져 있을 때 열립니다.</p>');
     }
     if (x.copies && x.copies.length) {
-      h += "<h3>복사해서 붙여넣기</h3>" + x.copies.map(function (c, i) { return '<div class="copy"><div class="ch"><b>' + esc(c.label) + '</b><button class="btn sm" data-act="copy" data-id="' + id + '" data-i="' + i + '">복사</button></div><pre>' + esc(c.text) + "</pre></div>"; }).join("");
+      h += "<h3>복사해서 붙여넣기</h3>" + x.copies.map(function (c, i) { return '<div class="copy"><div class="ch"><b>' + esc(c.label) + '</b><button class="btn sm" data-act="copy" data-id="' + id + '" data-i="' + i + '">복사</button></div><pre>' + mark(esc(c.text)) + "</pre></div>"; }).join("");
     }
     if (x.images && x.images.length) {
       h += "<h3>사진 — [복사] 누르고 바로 붙여넣기</h3><div class=\"imgs\">" + x.images.map(function (m) {
@@ -337,7 +455,7 @@
   }
   function ideaRow(x, d, i, cur, from) {
     var gold = d.t === "아이디어";
-    return '<div class="idea"><span class="it' + (gold ? " gold" : "") + '">' + (gold ? "💡 아이디어" : "실장 제안") + "</span>" + (from || "") + '<div class="itx">' + linkify(d.text) + '</div><div class="rb">' +
+    return '<div class="idea"><span class="it' + (gold ? " gold" : "") + '">' + (gold ? "💡 아이디어" : "실장 제안") + "</span>" + (from || "") + '<div class="itx">' + mark(linkify(d.text)) + '</div><div class="rb">' +
       REACT.map(function (o) { return '<button class="' + (cur === o[0] ? "on" : "") + '" data-act="react" data-id="' + esc(x.id) + '" data-i="' + i + '" data-v="' + o[0] + '">' + (cur === o[0] ? "✓ " : "") + o[1] + "</button>"; }).join("") +
       '<button class="pc" data-act="ideacopy" data-id="' + esc(x.id) + '" data-i="' + i + '" title="복사해서 새 대화창에 붙여넣고 더 얘기하기">⧉</button></div></div>';
   }
@@ -446,7 +564,8 @@
     h += '<div class="card"><h2>PC 도우미(폴더 사진·HTML 바로 열기)</h2>' + (S.local ? '<div class="okbox">연결됨 — [열기]·[사진 복사]·[폴더]가 바로 됩니다.</div>' :
       '<p class="note">PC를 켜면 도우미가 자동으로 켜집니다(윈도 시작 프로그램 「필투두 도우미」). 안 켜져 있으면 <b>twowings\\philtodo\\필투두_켜기.bat</b> 을 두 번 누르세요. PC 필투두 주소는 http://127.0.0.1:8790 이고, 크롬 주소창 오른쪽 [설치] 아이콘을 누르면 PC 앱이 됩니다.</p>') + "</div>";
     h += '<div class="card"><h2>폰에 설치</h2><p class="note">폰 크롬(아이폰은 사파리)에서 필투두 주소를 열고 메뉴 → [홈 화면에 추가]. 폰에서는 할 일 보기·체크·주소 넣기·결정이 되고, 폴더 사진 복사는 PC에서 합니다.</p></div>';
-    h += '<div class="card"><h2>이 기기 저장</h2><p class="note">열린 일 + 최근 ' + KEEP_DAYS + "일만 이 기기에 둡니다(지금 " + Object.keys(S.items).length + "건). 지난 기록은 서버에 있어 [한 일]·[클실장]에서 찾으면 가져옵니다.</p></div>";
+    h += '<div class="card"><h2>이 기기 저장</h2><p class="note">열린 일 + 최근 ' + KEEP_DAYS + "일만 이 기기에 둡니다(지금 " + Object.keys(S.items).length + "건). 지난 기록은 서버에 있어 맨 위 🔍 찾기나 [한 일]·[클실장]에서 찾으면 가져옵니다.</p></div>";
+    h += '<div class="card"><h2>🔍 찾기</h2><p class="note">맨 위 칸에 낱말을 넣으면 할 일·한 일·💡 아이디어·클실장 기록을 한 번에 찾습니다. 제목뿐 아니라 순서·복사 문구·메모·내 답·올린 주소까지 보고, 낱말을 띄어 여러 개 넣으면 모두 들어간 것만 나옵니다. 날짜(11/19·11월)로도 찾습니다. PC에서는 <b>/</b> 키를 누르면 바로 찾기 칸으로 갑니다.</p></div>';
     return h;
   }
 
@@ -460,16 +579,17 @@
 
   /* ---------- 이벤트 ---------- */
   document.addEventListener("click", function (ev) {
-    var t = ev.target.closest("[data-view],[data-mode],[data-cat],[data-karea],[data-ifilter],[data-act]"); if (!t) return;
+    var t = ev.target.closest("[data-view],[data-mode],[data-cat],[data-karea],[data-ifilter],[data-fk],[data-act]"); if (!t) return;
     if (t.hasAttribute("data-ifilter")) { S.ifilter = t.getAttribute("data-ifilter"); render(); return; }
-    if (t.hasAttribute("data-view")) { S.view = t.getAttribute("data-view"); LS.set("view", S.view); render(); window.scrollTo(0, 0); return; }
+    if (t.hasAttribute("data-fk")) { S.fk = t.getAttribute("data-fk"); render(); return; }
+    if (t.hasAttribute("data-view")) { clearFind(); S.view = t.getAttribute("data-view"); LS.set("view", S.view); render(); window.scrollTo(0, 0); return; }
     if (t.hasAttribute("data-mode")) { S.mode = t.getAttribute("data-mode"); LS.set("mode", S.mode); render(); return; }
     if (t.hasAttribute("data-cat")) { S.cat = t.getAttribute("data-cat"); render(); return; }
     if (t.hasAttribute("data-karea")) { S.karea = t.getAttribute("data-karea"); if (S.remote.log) remoteSearch("log"); else render(); return; }
     var a = t.getAttribute("data-act"), id = t.getAttribute("data-id"), x = id && S.items[id];
-    if (id && !x) { ["done", "log"].forEach(function (k) { (S.remote[k] || []).forEach(function (r) { if (r.id === id) x = S.items[id] = r; }); }); }
+    if (id && !x) { [S.remote.done, S.remote.log, S.fr && S.fr.rows].forEach(function (arr) { (arr || []).forEach(function (r) { if (r.id === id) x = S.items[id] = r; }); }); }
     if (a === "expand") { S.open[id] = !S.open[id]; render(); return; }
-    if (a === "goto") { ev.preventDefault(); S.view = "todo"; S.cat = "전체"; S.mode = "all"; S.open[id] = true; if (x && x.snoozeTo) S.open["sec_snooze"] = true; if (x && x.due && bucket(x) === "later") S.open["sec_later"] = true; render(); var el = document.getElementById("c_" + id); if (el) el.scrollIntoView({ block: "start" }); return; }
+    if (a === "goto") { ev.preventDefault(); clearFind(); S.view = "todo"; S.cat = "전체"; S.mode = "all"; S.open[id] = true; if (x && x.snoozeTo) S.open["sec_snooze"] = true; if (x && x.due && bucket(x) === "later") S.open["sec_later"] = true; render(); var el = document.getElementById("c_" + id); if (el) el.scrollIntoView({ block: "start" }); return; }
     if (a === "toggle" && x) {
       if (x.status === "done") { setUser(id, { status: "todo", doneAt: null, doneBy: null }); toast("다시 할 일로 돌렸습니다"); }
       else { var miss = (x.fields || []).filter(function (f) { return f.need && !((x.urls || {})[f.key]); }); setUser(id, { status: "done", doneAt: nowIso(), doneBy: "사장님" }); toast(miss.length ? "완료! 올린 주소도 넣어 주시면 클실장이 링크를 채웁니다" : "완료했습니다", { label: "되돌리기", fn: function () { setUser(id, { status: "todo", doneAt: null, doneBy: null }); } }); }
@@ -508,12 +628,30 @@
   });
   document.addEventListener("toggle", function (ev) { var s = ev.target.getAttribute && ev.target.getAttribute("data-sec"); if (s) S.open["sec_" + s] = ev.target.open; var s2 = ev.target.getAttribute && ev.target.getAttribute("data-isec"); if (s2) S.open["isec_" + s2] = ev.target.open; }, true);
   var st = 0;
+  var frt = 0;
   document.addEventListener("input", function (ev) {
-    var t = ev.target; if (t.id !== "dq" && t.id !== "kq") return;
+    var t = ev.target;
+    if (t.id === "fq") {  // 머리글 찾기 칸 — 머리글은 다시 그리지 않으니 글자를 치는 중에도 칸이 그대로다
+      S.fq = t.value; S.fk = S.fk || "전체";
+      if (S.fq.trim()) { if (S.view !== "find") { S.fprev = S.view; S.view = "find"; S.fk = "전체"; window.scrollTo(0, 0); } }
+      else if (S.view === "find") { S.view = S.fprev || "todo"; }
+      clearTimeout(frt); frt = setTimeout(render, 120);
+      clearTimeout(ftm); if (terms(S.fq).join("").length >= 2) ftm = setTimeout(findRemote, 550);
+      return;
+    }
+    if (t.id !== "dq" && t.id !== "kq") return;
     S[t.id] = t.value; clearTimeout(st);
     st = setTimeout(function () { var pos = t.selectionStart; render(); var n = $("#" + t.id); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (e) { } } }, 350);
   });
-  document.addEventListener("keydown", function (ev) { if (ev.key === "Enter" && (ev.target.id === "dq" || ev.target.id === "kq")) remoteSearch(ev.target.id === "dq" ? "done" : "log"); if (ev.key === "Enter" && ev.target.id === "pw") { var b = document.querySelector('[data-act="login"]'); if (b) b.click(); } });
+  document.addEventListener("keydown", function (ev) {
+    var tg = ev.target, typing = /^(INPUT|TEXTAREA|SELECT)$/.test(tg.tagName || "") || tg.isContentEditable;
+    if (tg.id === "fq") {
+      if (ev.key === "Enter") { ev.preventDefault(); findRemote(); if (S.fq.trim()) tg.blur(); }
+      if (ev.key === "Escape") { var back = S.view === "find" ? (S.fprev || "todo") : S.view; clearFind(); S.view = back; render(); tg.blur(); }
+      return;
+    }
+    if (!typing && (ev.key === "/" || ((ev.ctrlKey || ev.metaKey) && (ev.key === "k" || ev.key === "K")))) { var fi = $("#fq"); if (fi) { ev.preventDefault(); fi.focus(); fi.select(); } return; }
+    if (ev.key === "Enter" && (ev.target.id === "dq" || ev.target.id === "kq")) remoteSearch(ev.target.id === "dq" ? "done" : "log"); if (ev.key === "Enter" && ev.target.id === "pw") { var b = document.querySelector('[data-act="login"]'); if (b) b.click(); } });
   document.addEventListener("visibilitychange", function () { if (!document.hidden) { doSync(); render(); } });
   window.addEventListener("focus", function () { doSync(); });
   setInterval(function () { if (!document.hidden) doSync(); }, 60000);

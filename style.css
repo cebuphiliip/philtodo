@@ -135,3 +135,17 @@ a.from { color: #1c5fd1; }
 .top nav button.idea-nav { border-color: var(--gold); }
 .top nav button.idea-nav b { background: #e03131; color: #fff; }
 @media (max-width: 560px) { .top nav { gap: 2px; } .top nav button { flex: 1 1 auto; white-space: nowrap; font-size: 12px; padding: 6px 5px; } }
+
+/* 🔍 전체 찾기 — 머리글에 늘 떠 있는 칸 */
+.hs { order: 1; flex: 1 1 200px; min-width: 0; max-width: 340px; display: flex; align-items: center; gap: 6px; background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.3); border-radius: 999px; padding: 0 12px; cursor: text; }
+.hs input { flex: 1; min-width: 0; background: transparent; border: 0; outline: 0; color: #fff; padding: 7px 0; font-size: 14px; }
+.hs input::placeholder { color: rgba(255,255,255,.75); }
+.hs:focus-within { background: #fff; border-color: #fff; }
+.hs:focus-within input { color: var(--ink); }
+.hs:focus-within input::placeholder { color: var(--mute); }
+.top nav { order: 2; }
+mark { background: #ffe066; color: inherit; padding: 0 1px; border-radius: 3px; }
+.hit { font-size: 12.5px; background: #f6f3ec; border-radius: 8px; padding: 4px 8px; margin-top: 5px; word-break: break-all; }
+.hit b { color: var(--mute); margin-right: 4px; }
+.fsum { margin: -2px 0 8px; }
+@media (max-width: 560px) { .hs { flex-basis: 120px; max-width: none; } .hs input { font-size: 16px; padding: 5px 0; } }
