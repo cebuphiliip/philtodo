@@ -4,7 +4,7 @@
 (function () {
   "use strict";
   var CFG = window.PT_CONFIG || {}, SB = !!(CFG.url && CFG.key && window.fetch);
-  var USER_KEYS = ["status", "note", "doneAt", "doneBy", "snoozeTo", "answer", "urls", "checks", "uu"];
+  var USER_KEYS = ["status", "note", "doneAt", "doneBy", "snoozeTo", "answer", "urls", "checks", "react", "uu"];
   var CATS = [["올리기", "콘텐츠 올리기", "#e8590c"], ["수정", "올린 글 고치기", "#1c7ed6"], ["판단", "결정해 주실 것", "#7048e8"],
     ["설정", "카페·사이트 설정", "#0ca678"], ["연락", "업체 연락·확인", "#d6336c"], ["확인", "확인·점검", "#5c677d"], ["기타", "기타", "#868e96"]];
   var CAT = {}; CATS.forEach(function (c) { CAT[c[0]] = { label: c[1], color: c[2] }; });
@@ -233,7 +233,8 @@
     var v = S.view;
     document.querySelectorAll(".top nav button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-view") === v); });
     var nt = $("#navTodo"); if (nt) nt.textContent = list().length;
-    var h = v === "done" ? viewDone() : v === "kl" ? viewKl() : v === "set" ? viewSet() : viewTodo();
+    var h = v === "done" ? viewDone() : v === "kl" ? viewKl() : v === "set" ? viewSet() : v === "idea" ? viewIdeas() : viewTodo();
+    var ni = $("#navIdea"); if (ni) { var fi = sess ? freshIdeas().length : 0; ni.textContent = fi; ni.style.display = fi ? "" : "none"; }
     $("#app").innerHTML = h;
     $("#ver").textContent = "필투두 " + (window.PT_BUILD || "") + (S.local ? " · PC 도우미 연결됨" : "");
   }
@@ -248,7 +249,7 @@
     var mins = must.reduce(function (a, x) { return a + (x.mins || 0); }, 0);
     var dec = all.filter(function (x) { return x.cat === "판단" && bucket(x) !== "snooze"; }).length;
     var doneToday = Object.keys(S.items).map(function (k) { return S.items[k]; }).filter(function (x) { return x.kind === "task" && x.status === "done" && (x.doneAt || "").slice(0, 10) === td; }).length;
-    var h = '<div class="sum"><div><b>' + all.length + '</b><span>남은 일 전체</span></div><div class="hot"><b>' + must.length + "</b><span>오늘 꼭" + (mins ? " · 약 " + mins + "분" : "") + '</span></div><div><b>' + dec + '</b><span>결정 기다리는 것</span></div><div><b>' + doneToday + '</b><span>오늘 끝낸 일</span></div></div>';
+    var h = '<div class="sum"><div><b>' + all.length + '</b><span>남은 일 전체</span></div><div class="hot"><b>' + must.length + "</b><span>오늘 꼭" + (mins ? " · 약 " + mins + "분" : "") + '</span></div><div><b>' + dec + '</b><span>결정 기다리는 것</span></div><div><b>' + doneToday + '</b><span>오늘 끝낸 일</span></div><div class="idea-tile" data-view="idea"><b>💡 ' + freshIdeas().length + '</b><span>새 제안·아이디어 보기</span></div></div>';
     h += '<div class="mode"><button data-mode="all" class="' + (S.mode === "all" ? "on" : "") + '">전체 보기</button><button data-mode="must" class="' + (S.mode === "must" ? "on" : "") + '">시간 없을 때 — 꼭 할 것만</button></div>';
     var pool = S.mode === "must" ? must : all, counts = {};
     pool.forEach(function (x) { counts[x.cat] = (counts[x.cat] || 0) + 1; });
@@ -276,14 +277,14 @@
     h += '<div class="t">' + (isNew ? '<span class="badge new">새</span> ' : "") + esc(x.title) + "</div>";
     h += '<div class="meta">' + catChip(x.cat) + (x.due ? '<span class="due' + (x.due < td && !done ? " late" : "") + '">' + (x.due < td && !done ? "기한 지남 " : "") + md(x.due) + (x.dueNote ? " " + esc(x.dueNote) : "") + "</span>" : "") +
       (x.mins ? "<span>약 " + x.mins + "분</span>" : "") + (x.biz ? "<span>" + esc(x.biz) + "</span>" : "") + (x.snoozeTo && x.snoozeTo > td ? "<span>" + md(x.snoozeTo) + "까지 미룸</span>" : "") +
-      (x.answer ? '<span class="badge">답함</span>' : "") + "</div>";
+      (x.answer ? '<span class="badge">답함</span>' : "") + (x.ideas && x.ideas.length ? '<span class="badge idea">💡 제안·아이디어 ' + x.ideas.length + "</span>" : "") + "</div>";
     if (x.why) h += '<div class="why">' + esc(x.why) + "</div>";
     h += "</div></div>";
     if (op) h += body(x);
     return h + "</div>";
   }
   function body(x) {
-    var id = esc(x.id), h = '<div class="body">';
+    var id = esc(x.id), h = '<div class="body">' + ideasBox(x);
     if (x.steps && x.steps.length) {
       var ck = x.checks || {};
       h += "<h3>순서</h3><ol class=\"steps\">" + x.steps.map(function (s, i) { return '<li class="' + (ck[i] ? "ok" : "") + '"><input type="checkbox" data-act="step" data-id="' + id + '" data-i="' + i + '"' + (ck[i] ? " checked" : "") + '><span class="grow">' + linkify(s) + '</span><button class="pc" data-act="para" data-id="' + id + '" data-i="' + i + '" title="이 문단만 복사해 클실장에게 고쳐 달라고 하기">⧉</button></li>'; }).join("") + "</ol>";
@@ -326,7 +327,46 @@
       '<span class="src">' + (x.src ? "출처: " + esc(x.src) : "") + (x.after ? (x.src ? " · " : "") + "끝나면 클실장이: " + esc(x.after) : "") + "</span></div>";
     return h + "</div>";
   }
-  /* 새 대화창에 붙여넣을 '수정 요청' — 맨 윗줄의 번호만 있으면 클실장이 원본 파일과 할 일을 찾아 고친다 */
+  /* 클실장 제안·아이디어 — 사장님이 가장 즐겨 보는 부분이라 노란 상자로 맨 위에, 하나씩 반응 버튼 */
+  var REACT = [["진행", "좋아요, 진행해"], ["보류", "나중에"], ["안 함", "안 할래요"]];
+  function ideasBox(x) {
+    if (!x.ideas || !x.ideas.length) return "";
+    var r = x.react || {};
+    return '<div class="ideas"><div class="ih">💡 클실장 제안·아이디어</div>' + x.ideas.map(function (d, i) { return ideaRow(x, d, i, r[i]); }).join("") + "</div>";
+  }
+  function ideaRow(x, d, i, cur, from) {
+    var gold = d.t === "아이디어";
+    return '<div class="idea"><span class="it' + (gold ? " gold" : "") + '">' + (gold ? "💡 아이디어" : "실장 제안") + "</span>" + (from || "") + '<div class="itx">' + linkify(d.text) + '</div><div class="rb">' +
+      REACT.map(function (o) { return '<button class="' + (cur === o[0] ? "on" : "") + '" data-act="react" data-id="' + esc(x.id) + '" data-i="' + i + '" data-v="' + o[0] + '">' + (cur === o[0] ? "✓ " : "") + o[1] + "</button>"; }).join("") +
+      '<button class="pc" data-act="ideacopy" data-id="' + esc(x.id) + '" data-i="' + i + '" title="복사해서 새 대화창에 붙여넣고 더 얘기하기">⧉</button></div></div>';
+  }
+  function allIdeas() {
+    var out = [];
+    Object.keys(S.items).forEach(function (k) { var x = S.items[k]; if (x.kind === "log" || !x.ideas) return; x.ideas.forEach(function (d, i) { out.push({ x: x, d: d, i: i, r: (x.react || {})[i] }); }); });
+    return out.sort(function (a, b) { return (b.x.t0 || 0) - (a.x.t0 || 0) || a.i - b.i; });
+  }
+  function freshIdeas() { return allIdeas().filter(function (e) { return !e.r && e.x.status !== "cancel" && !(e.x.kind === "task" && e.x.status === "done"); }); }
+  function viewIdeas() {
+    if (!sess) return needLogin();
+    var all = allIdeas(), f = S.ifilter || "전체";
+    var shown = all.filter(function (e) { return f === "전체" || (f === "아이디어" ? e.d.t === "아이디어" : e.d.t !== "아이디어"); });
+    var h = '<h1>💡 클실장 제안·아이디어</h1><p class="note" style="margin-top:-4px">일마다 클실장이 낸 제안과 아이디어를 모았습니다. [좋아요, 진행해]를 누르시면 클실장이 다음 작업 때 바로 진행하고, 더 얘기하고 싶으면 ⧉로 복사해 새 대화창에 붙여넣으세요.</p>';
+    h += '<div class="chips">' + ["전체", "아이디어", "제안"].map(function (c) { return '<button class="chip' + (f === c ? " on" : "") + '" data-ifilter="' + c + '">' + (c === "아이디어" ? "💡 아이디어" : c === "제안" ? "실장 제안" : "전체") + "</button>"; }).join("") + "</div>";
+    [["", "새로 온 것", "아직 답하지 않은 것"], ["진행", "진행하기로 한 것", "클실장이 진행합니다"], ["보류", "나중에", ""], ["안 함", "안 하기로 한 것", ""]].forEach(function (g) {
+      var xs = shown.filter(function (e) { return (e.r || "") === g[0] && (g[0] || !(e.x.kind === "task" && e.x.status === "done")); });
+      if (!xs.length) return;
+      h += '<div class="sec"><h2>' + g[1] + '</h2><span class="cnt">' + xs.length + "건" + (g[2] ? " · " + g[2] : "") + "</span></div>";
+      var body = '<div class="ideas big">' + xs.map(function (e) {
+        var from = e.x.kind === "task" ? ' <a class="from" href="#c_' + esc(e.x.id) + '" data-act="goto" data-id="' + esc(e.x.id) + '">할 일: ' + esc(e.x.title) + "</a>" : ' <span class="from">' + esc(e.x.kind === "idea" ? (e.x.area || "새 아이디어") : e.x.title) + "</span>";
+        return ideaRow(e.x, e.d, e.i, e.r, from + (e.x.t0 ? ' <span class="from">' + md(ymd(new Date(e.x.t0))) + "</span>" : ""));
+      }).join("") + "</div>";
+      h += g[0] ? "<details" + (S.open["isec_" + g[0]] ? " open" : "") + ' data-isec="' + g[0] + '"><summary class="note">펼쳐 보기</summary>' + body + "</details>" : body;
+    });
+    if (!all.length) h += '<div class="empty">아직 올라온 제안·아이디어가 없습니다.</div>';
+    return h;
+  }
+
+  /* 새 대화창에 붙여넣을 '수정 요청 — 맨 윗줄의 번호만 있으면 클실장이 원본 파일과 할 일을 찾아 고친다 */
   function reqText(x) {
     var L = ["[필투두 수정 요청] " + x.id, "할 일: " + x.title, "분류: " + (CAT[x.cat] || CAT["기타"]).label + (x.due ? " · 마감 " + md(x.due) : "") + (x.biz ? " · " + x.biz : "")];
     if (x.why) L.push("설명: " + x.why);
@@ -381,7 +421,7 @@
       h += '<div class="card"><h2>' + esc(g) + "</h2>" + '<div class="list">' + xs.map(function (x) {
         var ts = (x.tasks || []).map(function (tid) { var t = S.items[tid]; return t ? '<a href="#c_' + esc(tid) + '" data-act="goto" data-id="' + esc(tid) + '">' + (t.status === "done" ? "✓ " : "") + esc(t.title) + "</a>" : ""; }).filter(Boolean);
         return '<div class="row1"><div class="grow"><b>' + esc(x.title) + '</b> <span class="badge' + (x.state === "사장님 차례" ? " pri1" : "") + '">' + esc(x.state || "") + "</span>" +
-          (x.detail ? '<div class="note">' + esc(x.detail) + "</div>" : "") + (ts.length ? '<div class="note">사장님 할 일: ' + ts.join(" · ") + "</div>" : "") + "</div></div>";
+          (x.detail ? '<div class="note">' + esc(x.detail) + "</div>" : "") + ideasBox(x) + (ts.length ? '<div class="note">사장님 할 일: ' + ts.join(" · ") + "</div>" : "") + "</div></div>";
       }).join("") + "</div></div>";
     });
     h += '<div class="card"><h2>클실장이 맡고 있는 일 ' + kt.length + "건</h2>" + (kt.length ? '<div class="list">' + kt.map(function (x) { return '<div class="row1"><div class="d">' + (x.due ? md(x.due) : "") + '</div><div class="grow"><span class="area">' + esc(x.area || "") + "</span>" + esc(x.title) + (x.why ? '<div class="note">' + esc(x.why) + "</div>" : "") + "</div></div>"; }).join("") + "</div>" : '<p class="note">지금 맡은 일이 없습니다.</p>') + "</div>";
@@ -419,7 +459,8 @@
 
   /* ---------- 이벤트 ---------- */
   document.addEventListener("click", function (ev) {
-    var t = ev.target.closest("[data-view],[data-mode],[data-cat],[data-karea],[data-act]"); if (!t) return;
+    var t = ev.target.closest("[data-view],[data-mode],[data-cat],[data-karea],[data-ifilter],[data-act]"); if (!t) return;
+    if (t.hasAttribute("data-ifilter")) { S.ifilter = t.getAttribute("data-ifilter"); render(); return; }
     if (t.hasAttribute("data-view")) { S.view = t.getAttribute("data-view"); LS.set("view", S.view); render(); window.scrollTo(0, 0); return; }
     if (t.hasAttribute("data-mode")) { S.mode = t.getAttribute("data-mode"); LS.set("mode", S.mode); render(); return; }
     if (t.hasAttribute("data-cat")) { S.cat = t.getAttribute("data-cat"); render(); return; }
@@ -436,6 +477,8 @@
     if (a === "snooze" && x) { var n = +t.getAttribute("data-n"); setUser(id, { snoozeTo: addDays(today(), n) }); S.open[id] = false; toast(md(addDays(today(), n)) + "로 미뤘습니다", { label: "되돌리기", fn: function () { setUser(id, { snoozeTo: null }); } }); return; }
     if (a === "unsnooze" && x) { setUser(id, { snoozeTo: null }); return; }
     if (a === "copy" && x) { copyText(x.copies[+t.getAttribute("data-i")].text); return; }
+    if (a === "react" && x) { var rv = Object.assign({}, x.react || {}), ii = t.getAttribute("data-i"), vv = t.getAttribute("data-v"); if (rv[ii] === vv) delete rv[ii]; else rv[ii] = vv; setUser(id, { react: rv }); toast(rv[ii] === "진행" ? "좋습니다 — 클실장이 다음 작업 때 진행합니다" : rv[ii] ? "기록했습니다" : "답을 지웠습니다"); return; }
+    if (a === "ideacopy" && x) { var dd = x.ideas[+t.getAttribute("data-i")]; copyText("[필투두 아이디어] " + x.id + " #" + t.getAttribute("data-i") + "\n어디서: " + x.title + "\n" + (dd.t === "아이디어" ? "아이디어" : "실장 제안") + ": " + dd.text + "\n\n내 생각: ").then(function () { toast("복사했습니다 — 새 대화창에 붙여넣고 생각을 적어 주세요"); }); return; }
     if (a === "req" && x) { copyText(reqText(x)).then(function () { toast("복사했습니다 — 새 대화창에 붙여넣고 '고칠 점'만 적어 주세요"); }); return; }
     if (a === "para" && x) { copyText("[필투두 수정 요청] " + x.id + "\n할 일: " + x.title + "\n고칠 문단: " + x.steps[+t.getAttribute("data-i")] + "\n\n고칠 점: ").then(function () { toast("이 문단을 복사했습니다 — 새 대화창에 붙여넣고 고칠 점을 적어 주세요"); }); return; }
     if (a === "img") { copyImage(t.getAttribute("data-p")); return; }
@@ -462,7 +505,7 @@
     if (a === "note") { setUser(id, { note: t.value }, true); toast("메모를 저장했습니다"); return; }
     if (a === "ans") { var an = Object.assign({}, x.answer || {}); an.text = t.value.trim(); an.at = nowIso(); var fin = !!(an.pick || an.text); setUser(id, { answer: an, status: fin ? "done" : "todo", doneAt: fin ? nowIso() : null, doneBy: fin ? "사장님" : null }); toast("답을 보냈습니다"); return; }
   });
-  document.addEventListener("toggle", function (ev) { var s = ev.target.getAttribute && ev.target.getAttribute("data-sec"); if (s) S.open["sec_" + s] = ev.target.open; }, true);
+  document.addEventListener("toggle", function (ev) { var s = ev.target.getAttribute && ev.target.getAttribute("data-sec"); if (s) S.open["sec_" + s] = ev.target.open; var s2 = ev.target.getAttribute && ev.target.getAttribute("data-isec"); if (s2) S.open["isec_" + s2] = ev.target.open; }, true);
   var st = 0;
   document.addEventListener("input", function (ev) {
     var t = ev.target; if (t.id !== "dq" && t.id !== "kq") return;
