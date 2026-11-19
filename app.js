@@ -18,12 +18,39 @@
   };
   var S = {
     items: LS.get("items", {}), dirty: LS.get("dirty", {}), since: LS.get("since", ""), view: LS.get("view", "todo"),
-    cat: "전체", mode: LS.get("mode", "all"), open: {}, msg: "", busy: false, local: false,
+    cat: LS.get("cat", "전체"), mode: LS.get("mode", "all"), open: LS.get("open", {}), drafts: LS.get("drafts", {}), msg: "", busy: false, local: false,
     dq: "", dmonth: "", karea: "전체", kq: "", kmonth: "", remote: { done: null, log: null }, rbusy: false,
     fq: "", fk: "전체", fprev: "todo", fr: null, fbusy: false
   };
   var sess = LS.get("sess", null);
   function save() { LS.set("items", S.items); LS.set("dirty", S.dirty); LS.set("since", S.since); }
+  /* ---------- 💾 저장(2026-11-19 사장님, 원장 261119-110): 하다 만 입력·펼친 카드·보던 자리를 그대로 남겨 언제 다시 열어도 이어서 ---------- */
+  function dk(act, id, k) { return act + "|" + id + "|" + (k || ""); }
+  function draftOf(act, id, k, saved) { var v = S.drafts[dk(act, id, k)]; return v != null ? v : saved; }
+  function saveUi() { LS.set("open", S.open); LS.set("cat", S.cat); LS.set("view", S.view === "find" ? (S.fprev || "todo") : S.view); LS.set("mode", S.mode); LS.set("scroll", window.scrollY || 0); LS.set("drafts", S.drafts); }
+  function markSave() {
+    var b = document.getElementById("saveBtn"); if (!b) return;
+    var n = Object.keys(S.drafts).length;
+    b.classList.toggle("dirty", n > 0);
+    b.textContent = n ? "💾 저장 (" + n + ")" : "💾 저장";
+    b.title = n ? "아직 서버에 안 올라간 입력 " + n + "개 — 누르면 저장" : "지금 화면(체크·입력·펼친 카드·보던 자리) 저장";
+  }
+  function saveAll() {
+    var n = 0;
+    Object.keys(S.drafts).forEach(function (key) {
+      var p = key.split("|"), act = p[0], id = p[1], k = p[2], x = S.items[id], v = S.drafts[key];
+      if (!x) { delete S.drafts[key]; return; }
+      if (act === "url") { var u = Object.assign({}, x.urls || {}); u[k] = String(v).trim(); setUser(id, { urls: u }, true); delete S.drafts[key]; n++; }
+      else if (act === "note") { setUser(id, { note: v }, true); delete S.drafts[key]; n++; }
+      // ans(직접 답하기)는 보내는 순간 '답함·완료'가 되므로 저장 때는 이 기기에 쓰던 글로만 남긴다
+    });
+    saveUi(); save(); render(); markSave();
+    var keep = Object.keys(S.drafts).length;
+    var m = "저장했습니다 — 언제 다시 열어도 지금 화면 그대로 이어집니다" + (keep ? " (쓰다 만 답 " + keep + "개는 이 기기에 보관)" : "");
+    if (SB && sess) doSync().then(function () { toast(m); }, function () { toast("이 기기에 저장했습니다 — 인터넷이 되면 서버에도 올라갑니다"); });
+    else toast(sess ? m : "이 기기에 저장했습니다 (로그인하면 PC·폰에 같이 보입니다)");
+    return n;
+  }
 
   /* ---------- 날짜 ---------- */
   function ymd(d) { d = d || new Date(); return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2); }
@@ -427,18 +454,18 @@
     if (x.fields && x.fields.length) {
       var u = x.urls || {};
       h += "<h3>올린 뒤 주소 넣기 — 클실장이 읽고 등록부·링크를 채웁니다</h3>" + x.fields.map(function (f) {
-        var val = u[f.key] || "";
-        return '<div class="field' + (val ? " filled" : "") + '"><label>' + esc(f.label) + '</label><input type="url" inputmode="url" placeholder="' + esc(f.ph || "https://cafe.naver.com/freetourincebu/…") + '" value="' + esc(val) + '" data-act="url" data-id="' + id + '" data-k="' + esc(f.key) + '"></div>';
+        var val = draftOf("url", x.id, f.key, u[f.key] || ""), dr = S.drafts[dk("url", x.id, f.key)] != null;
+        return '<div class="field' + (val ? " filled" : "") + (dr ? " draft" : "") + '"><label>' + esc(f.label) + '</label><input type="url" inputmode="url" placeholder="' + esc(f.ph || "https://cafe.naver.com/freetourincebu/…") + '" value="' + esc(val) + '" data-act="url" data-id="' + id + '" data-k="' + esc(f.key) + '"></div>';
       }).join("");
     }
     if (x.choice) {
       var a = x.answer || {};
       h += '<h3>결정</h3><div class="choice">' + (x.choice.q ? '<div class="q">' + esc(x.choice.q) + "</div>" : "") + '<div class="opts">' +
         (x.choice.opts || []).map(function (o, i) { return '<button class="' + (a.pick === o ? "on" : "") + '" data-act="pick" data-id="' + id + '" data-i="' + i + '">' + (a.pick === o ? "✓ " : "") + esc(o) + "</button>"; }).join("") +
-        '</div><p class="note" style="margin:8px 0 4px">직접 답하기(고르기 대신·덧붙이기)</p><textarea data-act="ans" data-id="' + id + '" placeholder="예: 1번으로 하되 금액은 빼 줘">' + esc(a.text || "") + "</textarea>" +
+        '</div><p class="note" style="margin:8px 0 4px">직접 답하기(고르기 대신·덧붙이기)</p><textarea data-act="ans" data-id="' + id + '" placeholder="예: 1번으로 하되 금액은 빼 줘">' + esc(draftOf("ans", x.id, "", a.text || "")) + "</textarea>" +
         (a.at ? '<p class="note">답한 시각 ' + esc(a.at.replace("T", " ").slice(0, 16)) + " — 클실장이 다음 작업 때 반영합니다.</p>" : "") + "</div>";
     }
-    h += '<h3>클실장에게 메모</h3><textarea data-act="note" data-id="' + id + '" placeholder="예: 이건 다음 주로 / 사진 바꿔 줘">' + esc(x.note || "") + "</textarea>";
+    h += '<h3>클실장에게 메모</h3><textarea data-act="note" data-id="' + id + '" placeholder="예: 이건 다음 주로 / 사진 바꿔 줘">' + esc(draftOf("note", x.id, "", x.note || "")) + "</textarea>";
     h += '<div class="req"><button class="btn sm ghost" data-act="req" data-id="' + id + '">✎ 고칠 것 있으면 — 이 할 일 통째로 복사</button><span class="note">새 대화창에 붙여넣고 고칠 점만 적으시면 클실장이 묻지 않고 고쳐서 여기에 다시 올립니다. 문단 하나만이면 줄 끝 ⧉</span></div>';
     h += '<div class="foot2">' + (x.status === "done" ? '<button class="btn sm ghost" data-act="toggle" data-id="' + id + '">다시 할 일로</button>' :
       '<button class="btn ok" data-act="toggle" data-id="' + id + '">✓ 했어요</button><button class="btn sm ghost" data-act="snooze" data-n="1" data-id="' + id + '">내일로</button><button class="btn sm ghost" data-act="snooze" data-n="7" data-id="' + id + '">다음 주로</button>' +
@@ -566,6 +593,7 @@
     h += '<div class="card"><h2>폰에 설치</h2><p class="note">폰 크롬(아이폰은 사파리)에서 필투두 주소를 열고 메뉴 → [홈 화면에 추가]. 폰에서는 할 일 보기·체크·주소 넣기·결정이 되고, 폴더 사진 복사는 PC에서 합니다.</p></div>';
     h += '<div class="card"><h2>이 기기 저장</h2><p class="note">열린 일 + 최근 ' + KEEP_DAYS + "일만 이 기기에 둡니다(지금 " + Object.keys(S.items).length + "건). 지난 기록은 서버에 있어 맨 위 🔍 찾기나 [한 일]·[클실장]에서 찾으면 가져옵니다.</p></div>";
     h += '<div class="card"><h2>🔍 찾기</h2><p class="note">맨 위 칸에 낱말을 넣으면 할 일·한 일·💡 아이디어·클실장 기록을 한 번에 찾습니다. 제목뿐 아니라 순서·복사 문구·메모·내 답·올린 주소까지 보고, 낱말을 띄어 여러 개 넣으면 모두 들어간 것만 나옵니다. 날짜(11/19·11월)로도 찾습니다. PC에서는 <b>/</b> 키를 누르면 바로 찾기 칸으로 갑니다.</p></div>';
+    h += '<div class="card"><h2>💾 저장</h2><p class="note">하다가 멈춰야 할 때 맨 위 <b>[💾 저장]</b>을 누르면 체크·주소·메모와 펼쳐 둔 카드, 보던 자리까지 그대로 남아 다음에 열면 이어서 하실 수 있습니다. 주소·메모는 서버에도 올라가 PC·폰 어디서 열어도 같습니다. 칸에 치는 글은 누르지 않아도 이 기기에 바로 남고, 아직 서버에 안 올라간 것이 있으면 버튼이 금색으로 바뀌고 개수가 보입니다. 쓰다 만 「직접 답하기」는 보내면 완료가 되므로 저장해도 이 기기에만 남겨 둡니다.</p></div>';
     return h;
   }
 
@@ -584,11 +612,12 @@
     if (t.hasAttribute("data-fk")) { S.fk = t.getAttribute("data-fk"); render(); return; }
     if (t.hasAttribute("data-view")) { clearFind(); S.view = t.getAttribute("data-view"); LS.set("view", S.view); render(); window.scrollTo(0, 0); return; }
     if (t.hasAttribute("data-mode")) { S.mode = t.getAttribute("data-mode"); LS.set("mode", S.mode); render(); return; }
-    if (t.hasAttribute("data-cat")) { S.cat = t.getAttribute("data-cat"); render(); return; }
+    if (t.hasAttribute("data-cat")) { S.cat = t.getAttribute("data-cat"); LS.set("cat", S.cat); render(); return; }
     if (t.hasAttribute("data-karea")) { S.karea = t.getAttribute("data-karea"); if (S.remote.log) remoteSearch("log"); else render(); return; }
     var a = t.getAttribute("data-act"), id = t.getAttribute("data-id"), x = id && S.items[id];
+    if (a === "saveall") { saveAll(); return; }
     if (id && !x) { [S.remote.done, S.remote.log, S.fr && S.fr.rows].forEach(function (arr) { (arr || []).forEach(function (r) { if (r.id === id) x = S.items[id] = r; }); }); }
-    if (a === "expand") { S.open[id] = !S.open[id]; render(); return; }
+    if (a === "expand") { S.open[id] = !S.open[id]; LS.set("open", S.open); render(); return; }
     if (a === "goto") { ev.preventDefault(); clearFind(); S.view = "todo"; S.cat = "전체"; S.mode = "all"; S.open[id] = true; if (x && x.snoozeTo) S.open["sec_snooze"] = true; if (x && x.due && bucket(x) === "later") S.open["sec_later"] = true; render(); var el = document.getElementById("c_" + id); if (el) el.scrollIntoView({ block: "start" }); return; }
     if (a === "toggle" && x) {
       if (x.status === "done") { setUser(id, { status: "todo", doneAt: null, doneBy: null }); toast("다시 할 일로 돌렸습니다"); }
@@ -621,12 +650,13 @@
     if (t.id === "dmonth") { S.dmonth = t.value; if (S.remote.done) remoteSearch("done"); else render(); return; }
     if (t.id === "kmonth") { S.kmonth = t.value; if (S.remote.log) remoteSearch("log"); else render(); return; }
     if (!x) return;
+    if (a === "url" || a === "note" || a === "ans") { var dkey = dk(a, id, a === "url" ? t.getAttribute("data-k") : ""); if (S.drafts[dkey] != null) { delete S.drafts[dkey]; LS.set("drafts", S.drafts); markSave(); } }
     if (a === "step") { var ck = Object.assign({}, x.checks || {}); ck[t.getAttribute("data-i")] = t.checked; setUser(id, { checks: ck }); return; }
     if (a === "url") { var u = Object.assign({}, x.urls || {}); u[t.getAttribute("data-k")] = t.value.trim(); setUser(id, { urls: u }); toast("주소를 저장했습니다"); return; }
     if (a === "note") { setUser(id, { note: t.value }, true); toast("메모를 저장했습니다"); return; }
     if (a === "ans") { var an = Object.assign({}, x.answer || {}); an.text = t.value.trim(); an.at = nowIso(); var fin = !!(an.pick || an.text); setUser(id, { answer: an, status: fin ? "done" : "todo", doneAt: fin ? nowIso() : null, doneBy: fin ? "사장님" : null }); toast("답을 보냈습니다"); return; }
   });
-  document.addEventListener("toggle", function (ev) { var s = ev.target.getAttribute && ev.target.getAttribute("data-sec"); if (s) S.open["sec_" + s] = ev.target.open; var s2 = ev.target.getAttribute && ev.target.getAttribute("data-isec"); if (s2) S.open["isec_" + s2] = ev.target.open; }, true);
+  document.addEventListener("toggle", function (ev) { var s = ev.target.getAttribute && ev.target.getAttribute("data-sec"); if (s) S.open["sec_" + s] = ev.target.open; var s2 = ev.target.getAttribute && ev.target.getAttribute("data-isec"); if (s2) S.open["isec_" + s2] = ev.target.open; if (s || s2) LS.set("open", S.open); }, true);
   var st = 0;
   var frt = 0;
   document.addEventListener("input", function (ev) {
@@ -638,6 +668,10 @@
       clearTimeout(frt); frt = setTimeout(render, 120);
       clearTimeout(ftm); if (terms(S.fq).join("").length >= 2) ftm = setTimeout(findRemote, 550);
       return;
+    }
+    var da = t.getAttribute && t.getAttribute("data-act");
+    if (da === "url" || da === "note" || da === "ans") {  // 치는 동안 이 기기에 바로 남긴다 — 갑자기 닫혀도 다시 열면 그대로
+      S.drafts[dk(da, t.getAttribute("data-id"), da === "url" ? t.getAttribute("data-k") : "")] = t.value; LS.set("drafts", S.drafts); markSave(); return;
     }
     if (t.id !== "dq" && t.id !== "kq") return;
     S[t.id] = t.value; clearTimeout(st);
@@ -652,10 +686,12 @@
     }
     if (!typing && (ev.key === "/" || ((ev.ctrlKey || ev.metaKey) && (ev.key === "k" || ev.key === "K")))) { var fi = $("#fq"); if (fi) { ev.preventDefault(); fi.focus(); fi.select(); } return; }
     if (ev.key === "Enter" && (ev.target.id === "dq" || ev.target.id === "kq")) remoteSearch(ev.target.id === "dq" ? "done" : "log"); if (ev.key === "Enter" && ev.target.id === "pw") { var b = document.querySelector('[data-act="login"]'); if (b) b.click(); } });
-  document.addEventListener("visibilitychange", function () { if (!document.hidden) { doSync(); render(); } });
+  document.addEventListener("visibilitychange", function () { if (document.hidden) saveUi(); else { doSync(); render(); } });
+  window.addEventListener("pagehide", saveUi);
   window.addEventListener("focus", function () { doSync(); });
   setInterval(function () { if (!document.hidden) doSync(); }, 60000);
 
   window.PT_BUILD = window.PT_BUILD || (typeof PT_BUILD !== "undefined" ? PT_BUILD : "");
-  render(); checkLocal(); if (sess) doSync(); badge();
+  render(); markSave(); checkLocal(); if (sess) doSync(); badge();
+  (function () { var sy = LS.get("scroll", 0); if (sy > 0) setTimeout(function () { window.scrollTo(0, sy); }, 60); })();  // 저장해 둔 보던 자리로
 })();

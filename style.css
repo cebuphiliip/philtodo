@@ -144,6 +144,10 @@ a.from { color: #1c5fd1; }
 .hs:focus-within input { color: var(--ink); }
 .hs:focus-within input::placeholder { color: var(--mute); }
 .top nav { order: 2; }
+/* 💾 저장 — 찾기 칸 바로 옆(원장 261119-110). 서버에 안 올라간 입력이 있으면 금색 */
+.savebtn { order: 1; flex: 0 0 auto; background: rgba(255,255,255,.12); color: #fff; border: 1px solid rgba(255,255,255,.35); border-radius: 999px; padding: 7px 14px; font-size: 14px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+.savebtn.dirty { background: var(--gold); color: var(--navy); border-color: var(--gold); }
+.field.draft input { border-color: var(--gold); background: #fffbea; }
 mark { background: #ffe066; color: inherit; padding: 0 1px; border-radius: 3px; }
 .hit { font-size: 12.5px; background: #f6f3ec; border-radius: 8px; padding: 4px 8px; margin-top: 5px; word-break: break-all; }
 .hit b { color: var(--mute); margin-right: 4px; }
