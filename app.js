@@ -1,0 +1,479 @@
+/* 필투두 — 사장님 할 일·한 일, 클실장 할 일·한 일을 한곳에서.
+   데이터: Supabase pt_items(행 하나 = 할 일 하나, 내용은 data). 클실장 몫 칸과 사장님 몫 칸(체크·메모·주소·답·미루기)을 나눠
+   서로 덮어쓰지 않게 합친다. 이 기기에는 열린 일 + 최근 60일만 두고, 지난 일은 검색할 때 서버에서 가져온다(용량 차지 없음). */
+(function () {
+  "use strict";
+  var CFG = window.PT_CONFIG || {}, SB = !!(CFG.url && CFG.key && window.fetch);
+  var USER_KEYS = ["status", "note", "doneAt", "doneBy", "snoozeTo", "answer", "urls", "checks", "uu"];
+  var CATS = [["올리기", "콘텐츠 올리기", "#e8590c"], ["수정", "올린 글 고치기", "#1c7ed6"], ["판단", "결정해 주실 것", "#7048e8"],
+    ["설정", "카페·사이트 설정", "#0ca678"], ["연락", "업체 연락·확인", "#d6336c"], ["확인", "확인·점검", "#5c677d"], ["기타", "기타", "#868e96"]];
+  var CAT = {}; CATS.forEach(function (c) { CAT[c[0]] = { label: c[1], color: c[2] }; });
+  var KEEP_DAYS = 60;
+
+  var $ = function (s, r) { return (r || document).querySelector(s); };
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  var LS = {
+    get: function (k, d) { try { var v = localStorage.getItem("pt_" + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
+    set: function (k, v) { try { localStorage.setItem("pt_" + k, JSON.stringify(v)); } catch (e) { } }
+  };
+  var S = {
+    items: LS.get("items", {}), dirty: LS.get("dirty", {}), since: LS.get("since", ""), view: LS.get("view", "todo"),
+    cat: "전체", mode: LS.get("mode", "all"), open: {}, msg: "", busy: false, local: false,
+    dq: "", dmonth: "", karea: "전체", kq: "", kmonth: "", remote: { done: null, log: null }, rbusy: false
+  };
+  var sess = LS.get("sess", null);
+  function save() { LS.set("items", S.items); LS.set("dirty", S.dirty); LS.set("since", S.since); }
+
+  /* ---------- 날짜 ---------- */
+  function ymd(d) { d = d || new Date(); return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2); }
+  function today() { return ymd(new Date()); }
+  function addDays(s, n) { var p = s.split("-"), d = new Date(+p[0], +p[1] - 1, +p[2]); d.setDate(d.getDate() + n); return ymd(d); }
+  var WD = "일월화수목금토";
+  function md(s) { if (!s) return ""; var p = s.slice(0, 10).split("-"), d = new Date(+p[0], +p[1] - 1, +p[2]); return (+p[1]) + "/" + (+p[2]) + "(" + WD[d.getDay()] + ")"; }
+  function nowIso() { return new Date().toISOString(); }
+
+  /* ---------- 분류 ---------- */
+  function isOpen(x) { return x.kind === "task" && x.status !== "done" && x.status !== "cancel"; }
+  function bucket(x) {
+    var td = today();
+    if (x.snoozeTo && x.snoozeTo > td) return "snooze";
+    if (x.due && x.due < td) return "late";
+    if (x.due === td) return "today";
+    if (x.due && x.due <= addDays(td, 7)) return x.pri === 1 && x.due <= addDays(td, 1) ? "today" : "week";
+    if (x.due) return "later";
+    return x.pri === 1 ? "today" : x.pri === 2 ? "week" : "free";
+  }
+  var BUCKETS = [["late", "늦은 일", "기한이 지났습니다"], ["today", "오늘 꼭", "시간이 없어도 이것만은"], ["week", "이번 주", "날짜가 다가오는 일"],
+    ["free", "여유 있을 때", "시간 날 때 하나씩"], ["later", "예정", "날짜가 되면 위로 올라옵니다"], ["snooze", "미룬 일", "미룬 날짜가 되면 다시 올라옵니다"]];
+
+  /* ---------- 합치기(동기화) ---------- */
+  function merge(l, r) {
+    if (!l) return r; if (!r) return l;
+    var base = (r.u || 0) >= (l.u || 0) ? r : l, us = (l.uu || 0) >= (r.uu || 0) ? l : r, o = {};
+    Object.keys(base).forEach(function (k) { o[k] = base[k]; });
+    USER_KEYS.forEach(function (k) { if (us[k] === undefined) delete o[k]; else o[k] = us[k]; });
+    o.u = Math.max(l.u || 0, r.u || 0);
+    return o;
+  }
+  function setUser(id, patch, quiet) {
+    var x = S.items[id]; if (!x) return;
+    Object.keys(patch).forEach(function (k) { if (patch[k] === null) delete x[k]; else x[k] = patch[k]; });
+    x.uu = Date.now(); x.u = Date.now(); S.dirty[id] = 1; save();
+    if (!quiet) render();
+    syncSoon();
+  }
+
+  /* ---------- Supabase ---------- */
+  function api(path, opt) {
+    opt = opt || {};
+    var h = { apikey: CFG.key, "Content-Type": "application/json" };
+    if (opt.auth && sess) h.Authorization = "Bearer " + sess.access_token;
+    if (opt.prefer) h.Prefer = opt.prefer;
+    var ctl = window.AbortController ? new AbortController() : null, tm = setTimeout(function () { if (ctl) ctl.abort(); }, 20000);
+    return fetch(CFG.url + path, { method: opt.method || "GET", headers: h, body: opt.body ? JSON.stringify(opt.body) : undefined, signal: ctl ? ctl.signal : undefined }).then(function (r) {
+      clearTimeout(tm);
+      return r.text().then(function (t) { var j = null; try { j = t ? JSON.parse(t) : null; } catch (e) { } if (!r.ok) { var er = new Error((j && (j.msg || j.error_description || j.message || j.error)) || ("오류 " + r.status)); er.status = r.status; throw er; } return j; });
+    }, function (e) { clearTimeout(tm); throw new Error(e && e.name === "AbortError" ? "응답이 없습니다. 인터넷 연결을 확인해 주세요." : "연결 실패: " + (e.message || e)); });
+  }
+  function setSess(j) {
+    if (j && j.access_token) sess = { access_token: j.access_token, refresh_token: j.refresh_token, expires_at: j.expires_at || Math.floor(Date.now() / 1000) + (j.expires_in || 3600), user: { id: j.user.id, email: j.user.email } };
+    else sess = null;
+    LS.set("sess", sess);
+  }
+  function fresh() {
+    if (!sess) return Promise.reject(new Error("로그인이 필요합니다."));
+    if (sess.expires_at * 1000 - Date.now() > 60000) return Promise.resolve();
+    return api("/auth/v1/token?grant_type=refresh_token", { method: "POST", body: { refresh_token: sess.refresh_token } }).then(setSess, function (e) { if (e.status === 400 || e.status === 401) { setSess(null); render(); } throw e; });
+  }
+  function koErr(m) { return /Invalid login/i.test(m) ? "이메일 또는 비밀번호가 맞지 않습니다." : /not confirmed/i.test(m) ? "메일 확인이 아직입니다." : m; }
+  var timer = 0;
+  function syncSoon() { if (!SB || !sess) return; clearTimeout(timer); timer = setTimeout(doSync, 700); }
+  function msg(m) { S.msg = m; var el = $("#syncMsg"); if (el) el.textContent = m; }
+  function pullPage(q, off, acc) {
+    return api("/rest/v1/pt_items?select=id,data,updated_at" + q + "&order=updated_at.asc&limit=500&offset=" + off, { auth: true }).then(function (rows) {
+      acc = acc.concat(rows || []);
+      return rows && rows.length === 500 ? pullPage(q, off + 500, acc) : acc;
+    });
+  }
+  function doSync() {
+    if (!SB || !sess || S.busy) return Promise.resolve();
+    S.busy = true; msg("동기화 중…");
+    var first = !S.since, q;
+    if (first) q = "&or=(" + encodeURIComponent("data->>status.eq.todo,updated_at.gt.\"" + new Date(Date.now() - KEEP_DAYS * 864e5).toISOString() + "\"") + ")";
+    else q = "&updated_at=gt." + encodeURIComponent(new Date(Date.parse(S.since) - 5000).toISOString());
+    var got = 0, fresh0 = 0;
+    return fresh().then(function () { return pullPage(q, 0, []); }).then(function (rows) {
+      rows.forEach(function (row) {
+        var r = row.data, l = S.items[row.id];
+        if (!l && r.kind !== "log" && (r.t0 || 0) > Date.now() - 864e5) fresh0++;
+        var m = merge(l, r);
+        if (JSON.stringify(m) !== JSON.stringify(r)) S.dirty[row.id] = 1;
+        if (!l || JSON.stringify(l) !== JSON.stringify(m)) got++;
+        S.items[row.id] = m;
+        if (!S.since || row.updated_at > S.since) S.since = row.updated_at;
+      });
+      if (!S.since) S.since = nowIso();
+      prune(); save();
+      var ids = Object.keys(S.dirty).filter(function (id) { return S.items[id]; });
+      if (!ids.length) return 0;
+      var body = ids.map(function (id) { return { user_id: sess.user.id, id: id, data: S.items[id] }; });
+      return api("/rest/v1/pt_items?on_conflict=user_id,id", { method: "POST", auth: true, prefer: "resolution=merge-duplicates,return=minimal", body: body }).then(function () {
+        ids.forEach(function (id) { delete S.dirty[id]; }); save(); return ids.length;
+      });
+    }).then(function (sent) {
+      S.busy = false;
+      msg("동기화 완료 " + new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" }) + " · 받은 것 " + got + " · 보낸 것 " + sent);
+      if (got) { render(); if (fresh0 && !first) toast("클실장이 새 할 일 " + fresh0 + "건을 올렸습니다"); }
+      badge(); outbox();
+    }).catch(function (e) { S.busy = false; msg("동기화 실패: " + koErr(e.message || String(e))); });
+  }
+  /* PC 도우미의 보낼 함(클실장이 tools/pt.py add 로 넣은 것)을 가져와 사장님 계정으로 올린다.
+     클실장 몫 칸만 바꾸고 사장님 몫 칸(체크·주소·답·메모·미루기)은 서버에 있는 값을 지킨다. */
+  var obusy = false;
+  function outbox() {
+    if (!S.local || !sess || obusy) return;
+    obusy = true;
+    fetch("/api/outbox", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (j) {
+      var files = j.files || [], items = [];
+      files.forEach(function (f) { items = items.concat(f.items || []); });
+      if (!items.length) { obusy = false; return; }
+      var miss = items.map(function (x) { return x.id; }).filter(function (id, i, a) { return id && !S.items[id] && a.indexOf(id) === i; });
+      var p = miss.length ? fresh().then(function () { return api("/rest/v1/pt_items?select=id,data&id=in.(" + encodeURIComponent(miss.map(function (id) { return '"' + id + '"'; }).join(",")) + ")", { auth: true }); }) : Promise.resolve([]);
+      return p.then(function (rows) {
+        (rows || []).forEach(function (r) { S.items[r.id] = merge(S.items[r.id], r.data); });
+        var now = Date.now(), nNew = 0;
+        items.forEach(function (x) {
+          if (!x || !x.id) return;
+          var l = S.items[x.id], o = l ? Object.assign({}, l) : {};
+          Object.keys(x).forEach(function (k) { if (k === "force") return; if (l && (USER_KEYS.indexOf(k) >= 0 || k === "t0")) return; o[k] = x[k]; });
+          if (!l) { if (o.kind !== "log" && o.kind !== "sess" && !o.status) o.status = "todo"; o.t0 = o.t0 || now; if (o.kind === "task") nNew++; }
+          if (x.force) { Object.keys(x.force).forEach(function (k) { o[k] = x.force[k]; }); o.uu = now; }
+          o.u = now; S.items[x.id] = o; S.dirty[x.id] = 1;
+        });
+        save(); render();
+        return fetch("/api/outbox/ack", { method: "POST", headers: { "Content-Type": "application/json", "X-PT": "1" }, body: JSON.stringify({ files: files.map(function (f) { return f.name; }) }) }).then(function () {
+          obusy = false; if (nNew) toast("클실장이 새 할 일 " + nNew + "건을 올렸습니다"); doSync();
+        });
+      });
+    }).catch(function () { obusy = false; });
+  }
+  function prune() {
+    var cut = addDays(today(), -KEEP_DAYS);
+    Object.keys(S.items).forEach(function (id) {
+      var x = S.items[id]; if (S.dirty[id]) return;
+      var d = x.kind === "log" ? x.date : (x.status === "done" || x.status === "cancel") ? (x.doneAt || "").slice(0, 10) : null;
+      if (d && d < cut) delete S.items[id];
+    });
+  }
+  function badge() {
+    var n = list().filter(function (x) { var b = bucket(x); return b === "late" || b === "today"; }).length;
+    try { if (navigator.setAppBadge) n ? navigator.setAppBadge(n) : navigator.clearAppBadge(); } catch (e) { }
+  }
+
+  /* ---------- 서버 검색(지난 일) ---------- */
+  function remoteSearch(kind) {
+    if (!SB || !sess) return;
+    S.rbusy = true; render();
+    var q = "/rest/v1/pt_items?select=id,data";
+    if (kind === "done") {
+      q += "&data->>kind=eq.task&data->>status=eq.done&order=" + encodeURIComponent("data->>doneAt") + ".desc&limit=300";
+      if (S.dmonth) q += "&" + encodeURIComponent("data->>doneAt") + "=like." + encodeURIComponent(S.dmonth + "*");
+      if (S.dq) q += "&" + encodeURIComponent("data->>title") + "=ilike." + encodeURIComponent("*" + S.dq + "*");
+    } else {
+      q += "&data->>kind=eq.log&order=" + encodeURIComponent("data->>date") + ".desc&limit=400";
+      if (S.kmonth) q += "&" + encodeURIComponent("data->>date") + "=like." + encodeURIComponent(S.kmonth + "*");
+      if (S.karea !== "전체") q += "&" + encodeURIComponent("data->>area") + "=eq." + encodeURIComponent(S.karea);
+      if (S.kq) q += "&" + encodeURIComponent("data->>title") + "=ilike." + encodeURIComponent("*" + S.kq + "*");
+    }
+    q = q.replace("&data->>kind", "&" + encodeURIComponent("data->>kind")).replace("&data->>status", "&" + encodeURIComponent("data->>status"));
+    fresh().then(function () { return api(q, { auth: true }); }).then(function (rows) {
+      S.remote[kind] = (rows || []).map(function (r) { return r.data; }); S.rbusy = false; render();
+    }).catch(function (e) { S.rbusy = false; toast("검색 실패: " + koErr(e.message)); render(); });
+  }
+
+  /* ---------- PC 도우미(폴더 파일) ---------- */
+  function helperBase() { return S.local ? "" : (CFG.helper || "http://127.0.0.1:8790"); }
+  function fileUrl(p) { return helperBase() + "/f/" + p.split("/").map(encodeURIComponent).join("/"); }
+  function checkLocal() {
+    if (!/^(127\.0\.0\.1|localhost)$/.test(location.hostname)) return;
+    fetch("/api/ping", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (j) { S.local = !!j.ok; render(); }).catch(function () { });
+  }
+  function openFolder(p) {
+    if (!S.local) { toast("폴더 열기는 PC 필투두(127.0.0.1:8790)에서 됩니다"); return; }
+    fetch("/api/open", { method: "POST", headers: { "Content-Type": "application/json", "X-PT": "1" }, body: JSON.stringify({ path: p }) })
+      .then(function (r) { return r.json(); }).then(function (j) { toast(j.ok ? "탐색기에서 열었습니다" : (j.msg || "못 열었습니다")); }).catch(function () { toast("PC 도우미가 꺼져 있습니다"); });
+  }
+
+  /* ---------- 복사 ---------- */
+  function copyText(t) {
+    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(t).then(function () { toast("복사했습니다 — 붙여넣기(Ctrl+V) 하세요"); }, function () { fallback(t); });
+    fallback(t); return Promise.resolve();
+  }
+  function fallback(t) { var ta = document.createElement("textarea"); ta.value = t; ta.style.position = "fixed"; ta.style.opacity = "0"; document.body.appendChild(ta); ta.select(); try { document.execCommand("copy"); toast("복사했습니다"); } catch (e) { toast("복사가 막혔습니다 — 길게 눌러 복사해 주세요"); } ta.remove(); }
+  function toPng(blob) {
+    if (blob.type === "image/png") return Promise.resolve(blob);
+    return createImageBitmap(blob).then(function (bm) {
+      var c = document.createElement("canvas"); c.width = bm.width; c.height = bm.height; c.getContext("2d").drawImage(bm, 0, 0);
+      return new Promise(function (ok) { c.toBlob(ok, "image/png"); });
+    });
+  }
+  function copyImage(p) {
+    if (!S.local) { toast("사진 복사는 PC 필투두에서 됩니다(폰은 길게 눌러 저장)"); return; }
+    if (!window.ClipboardItem) { toast("이 브라우저는 사진 복사를 못 합니다 — 크롬·엣지를 써 주세요"); return; }
+    var pr = fetch(fileUrl(p)).then(function (r) { if (!r.ok) throw new Error("사진을 찾지 못했습니다"); return r.blob(); }).then(toPng);
+    navigator.clipboard.write([new ClipboardItem({ "image/png": pr })]).then(function () { toast("사진을 복사했습니다 — 카페 글쓰기에 붙여넣기(Ctrl+V)"); }, function () {
+      window.open(fileUrl(p), "_blank"); toast("이 창에서는 사진 복사가 막혀 새 탭에 열었습니다 — 사진에서 오른쪽 클릭 → [이미지 복사]");
+    });
+  }
+
+  /* ---------- 화면 ---------- */
+  function list() { return Object.keys(S.items).map(function (id) { return S.items[id]; }).filter(isOpen); }
+  function catChip(c) { var k = CAT[c] || CAT["기타"]; return '<span class="cat" style="--c:' + k.color + '">' + esc(k.label) + "</span>"; }
+  function render() {
+    var v = S.view;
+    document.querySelectorAll(".top nav button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-view") === v); });
+    var nt = $("#navTodo"); if (nt) nt.textContent = list().length;
+    var h = v === "done" ? viewDone() : v === "kl" ? viewKl() : v === "set" ? viewSet() : viewTodo();
+    $("#app").innerHTML = h;
+    $("#ver").textContent = "필투두 " + (window.PT_BUILD || "") + (S.local ? " · PC 도우미 연결됨" : "");
+  }
+  function needLogin() {
+    return '<div class="card"><h2>로그인하면 할 일이 보입니다</h2><p class="note">필보드와 같은 이메일·비밀번호로 한 번만 로그인하면 이 기기에 계속 남습니다. 클실장이 올린 할 일과 사장님 체크가 PC·폰에 같이 보입니다.</p><button class="btn" data-view="set">로그인하러 가기</button></div>';
+  }
+
+  function viewTodo() {
+    if (!sess) return needLogin();
+    var all = list(), td = today();
+    var must = all.filter(function (x) { var b = bucket(x); return b === "late" || b === "today"; });
+    var mins = must.reduce(function (a, x) { return a + (x.mins || 0); }, 0);
+    var dec = all.filter(function (x) { return x.cat === "판단" && bucket(x) !== "snooze"; }).length;
+    var doneToday = Object.keys(S.items).map(function (k) { return S.items[k]; }).filter(function (x) { return x.kind === "task" && x.status === "done" && (x.doneAt || "").slice(0, 10) === td; }).length;
+    var h = '<div class="sum"><div><b>' + all.length + '</b><span>남은 일 전체</span></div><div class="hot"><b>' + must.length + "</b><span>오늘 꼭" + (mins ? " · 약 " + mins + "분" : "") + '</span></div><div><b>' + dec + '</b><span>결정 기다리는 것</span></div><div><b>' + doneToday + '</b><span>오늘 끝낸 일</span></div></div>';
+    h += '<div class="mode"><button data-mode="all" class="' + (S.mode === "all" ? "on" : "") + '">전체 보기</button><button data-mode="must" class="' + (S.mode === "must" ? "on" : "") + '">시간 없을 때 — 꼭 할 것만</button></div>';
+    var pool = S.mode === "must" ? must : all, counts = {};
+    pool.forEach(function (x) { counts[x.cat] = (counts[x.cat] || 0) + 1; });
+    h += '<div class="chips"><button class="chip' + (S.cat === "전체" ? " on" : "") + '" data-cat="전체">전체 ' + pool.length + "</button>" +
+      CATS.filter(function (c) { return counts[c[0]]; }).map(function (c) { return '<button class="chip' + (S.cat === c[0] ? " on" : "") + '" data-cat="' + c[0] + '">' + c[1] + " " + counts[c[0]] + "</button>"; }).join("") + "</div>";
+    var shown = pool.filter(function (x) { return S.cat === "전체" || x.cat === S.cat; });
+    if (!shown.length) h += '<div class="empty">' + (all.length ? "이 조건에 남은 일이 없습니다." : "남은 일이 없습니다. 수고하셨습니다.") + "</div>";
+    BUCKETS.forEach(function (b) {
+      if (S.mode === "must" && b[0] !== "late" && b[0] !== "today") return;
+      var xs = shown.filter(function (x) { return bucket(x) === b[0]; }).sort(sorter);
+      if (!xs.length) return;
+      h += '<div class="sec ' + b[0] + '"><h2>' + b[1] + '</h2><span class="cnt">' + xs.length + "건 · " + b[2] + "</span></div>";
+      if (b[0] === "snooze" || b[0] === "later") h += "<details" + (S.open["sec_" + b[0]] ? " open" : "") + ' data-sec="' + b[0] + '"><summary class="note">펼쳐 보기</summary>' + xs.map(card).join("") + "</details>";
+      else h += xs.map(card).join("");
+    });
+    if (S.mode === "must" && all.length > must.length) h += '<p class="note" style="text-align:center;margin-top:14px">나머지 ' + (all.length - must.length) + '건은 미뤄 두셔도 됩니다. <button class="btn sm ghost" data-mode="all">전체 보기</button></p>';
+    return h;
+  }
+  function sorter(a, b) { return (a.due || "9999").localeCompare(b.due || "9999") || (a.pri || 3) - (b.pri || 3) || (a.order || 0) - (b.order || 0) || (a.t0 || 0) - (b.t0 || 0); }
+
+  function card(x) {
+    var op = !!S.open[x.id], td = today(), done = x.status === "done";
+    var isNew = !done && (x.t0 || 0) > Date.now() - 864e5;
+    var h = '<div class="card task' + (done ? " done" : "") + '" id="c_' + esc(x.id) + '"><div class="head"><button class="chk" data-act="toggle" data-id="' + esc(x.id) + '" title="했어요">✓</button><div class="grow" data-act="expand" data-id="' + esc(x.id) + '">';
+    h += '<div class="t">' + (isNew ? '<span class="badge new">새</span> ' : "") + esc(x.title) + "</div>";
+    h += '<div class="meta">' + catChip(x.cat) + (x.due ? '<span class="due' + (x.due < td && !done ? " late" : "") + '">' + (x.due < td && !done ? "기한 지남 " : "") + md(x.due) + (x.dueNote ? " " + esc(x.dueNote) : "") + "</span>" : "") +
+      (x.mins ? "<span>약 " + x.mins + "분</span>" : "") + (x.biz ? "<span>" + esc(x.biz) + "</span>" : "") + (x.snoozeTo && x.snoozeTo > td ? "<span>" + md(x.snoozeTo) + "까지 미룸</span>" : "") +
+      (x.answer ? '<span class="badge">답함</span>' : "") + "</div>";
+    if (x.why) h += '<div class="why">' + esc(x.why) + "</div>";
+    h += "</div></div>";
+    if (op) h += body(x);
+    return h + "</div>";
+  }
+  function body(x) {
+    var id = esc(x.id), h = '<div class="body">';
+    if (x.steps && x.steps.length) {
+      var ck = x.checks || {};
+      h += "<h3>순서</h3><ol class=\"steps\">" + x.steps.map(function (s, i) { return '<li class="' + (ck[i] ? "ok" : "") + '"><input type="checkbox" data-act="step" data-id="' + id + '" data-i="' + i + '"' + (ck[i] ? " checked" : "") + '><span class="grow">' + linkify(s) + '</span><button class="pc" data-act="para" data-id="' + id + '" data-i="' + i + '" title="이 문단만 복사해 클실장에게 고쳐 달라고 하기">⧉</button></li>'; }).join("") + "</ol>";
+    }
+    if (x.links && x.links.length) {
+      h += "<h3>바로 열기</h3><div class=\"btns\">" + x.links.map(function (l) {
+        if (l.url) return '<a class="btn ghost" target="_blank" rel="noopener" href="' + esc(l.url) + '">' + esc(l.label) + " ↗</a>";
+        return '<a class="btn' + (S.local ? "" : " ghost") + '" target="_blank" rel="noopener" href="' + esc(fileUrl(l.path)) + '">' + esc(l.label) + (S.local ? "" : " (PC)") + "</a>" +
+          (S.local ? '<button class="btn sm ghost" data-act="folder" data-p="' + esc(l.path) + '" title="탐색기에서 열기">폴더</button>' : "");
+      }).join("") + "</div>" + (S.local ? "" : '<p class="note">(PC) 표시는 PC에서 필투두 도우미가 켜져 있을 때 열립니다.</p>');
+    }
+    if (x.copies && x.copies.length) {
+      h += "<h3>복사해서 붙여넣기</h3>" + x.copies.map(function (c, i) { return '<div class="copy"><div class="ch"><b>' + esc(c.label) + '</b><button class="btn sm" data-act="copy" data-id="' + id + '" data-i="' + i + '">복사</button></div><pre>' + esc(c.text) + "</pre></div>"; }).join("");
+    }
+    if (x.images && x.images.length) {
+      h += "<h3>사진 — [복사] 누르고 바로 붙여넣기</h3><div class=\"imgs\">" + x.images.map(function (m) {
+        return '<div class="img">' + (S.local ? '<div class="ph" data-act="zoom" data-src="' + esc(fileUrl(m.path)) + '" style="background-image:url(\'' + esc(fileUrl(m.path)).replace(/'/g, "%27") + '\')"></div>' : '<div class="noimg">사진은 PC 필투두에서 보입니다</div>') +
+          '<div class="cap">' + esc(m.label || m.path.split("/").pop()) + '</div><div class="btns"><button class="btn sm' + (S.local ? "" : " off") + '" data-act="img" data-p="' + esc(m.path) + '">복사</button>' + (S.local ? '<button class="btn sm ghost" data-act="folder" data-p="' + esc(m.path) + '">폴더</button>' : "") + "</div></div>";
+      }).join("") + "</div>";
+    }
+    if (x.fields && x.fields.length) {
+      var u = x.urls || {};
+      h += "<h3>올린 뒤 주소 넣기 — 클실장이 읽고 등록부·링크를 채웁니다</h3>" + x.fields.map(function (f) {
+        var val = u[f.key] || "";
+        return '<div class="field' + (val ? " filled" : "") + '"><label>' + esc(f.label) + '</label><input type="url" inputmode="url" placeholder="' + esc(f.ph || "https://cafe.naver.com/freetourincebu/…") + '" value="' + esc(val) + '" data-act="url" data-id="' + id + '" data-k="' + esc(f.key) + '"></div>';
+      }).join("");
+    }
+    if (x.choice) {
+      var a = x.answer || {};
+      h += '<h3>결정</h3><div class="choice">' + (x.choice.q ? '<div class="q">' + esc(x.choice.q) + "</div>" : "") + '<div class="opts">' +
+        (x.choice.opts || []).map(function (o, i) { return '<button class="' + (a.pick === o ? "on" : "") + '" data-act="pick" data-id="' + id + '" data-i="' + i + '">' + (a.pick === o ? "✓ " : "") + esc(o) + "</button>"; }).join("") +
+        '</div><p class="note" style="margin:8px 0 4px">직접 답하기(고르기 대신·덧붙이기)</p><textarea data-act="ans" data-id="' + id + '" placeholder="예: 1번으로 하되 금액은 빼 줘">' + esc(a.text || "") + "</textarea>" +
+        (a.at ? '<p class="note">답한 시각 ' + esc(a.at.replace("T", " ").slice(0, 16)) + " — 클실장이 다음 작업 때 반영합니다.</p>" : "") + "</div>";
+    }
+    h += '<h3>클실장에게 메모</h3><textarea data-act="note" data-id="' + id + '" placeholder="예: 이건 다음 주로 / 사진 바꿔 줘">' + esc(x.note || "") + "</textarea>";
+    h += '<div class="req"><button class="btn sm ghost" data-act="req" data-id="' + id + '">✎ 고칠 것 있으면 — 이 할 일 통째로 복사</button><span class="note">새 대화창에 붙여넣고 고칠 점만 적으시면 클실장이 묻지 않고 고쳐서 여기에 다시 올립니다. 문단 하나만이면 줄 끝 ⧉</span></div>';
+    h += '<div class="foot2">' + (x.status === "done" ? '<button class="btn sm ghost" data-act="toggle" data-id="' + id + '">다시 할 일로</button>' :
+      '<button class="btn ok" data-act="toggle" data-id="' + id + '">✓ 했어요</button><button class="btn sm ghost" data-act="snooze" data-n="1" data-id="' + id + '">내일로</button><button class="btn sm ghost" data-act="snooze" data-n="7" data-id="' + id + '">다음 주로</button>' +
+      (x.snoozeTo ? '<button class="btn sm ghost" data-act="unsnooze" data-id="' + id + '">미루기 취소</button>' : "")) +
+      '<span class="src">' + (x.src ? "출처: " + esc(x.src) : "") + (x.after ? (x.src ? " · " : "") + "끝나면 클실장이: " + esc(x.after) : "") + "</span></div>";
+    return h + "</div>";
+  }
+  /* 새 대화창에 붙여넣을 '수정 요청' — 맨 윗줄의 번호만 있으면 클실장이 원본 파일과 할 일을 찾아 고친다 */
+  function reqText(x) {
+    var L = ["[필투두 수정 요청] " + x.id, "할 일: " + x.title, "분류: " + (CAT[x.cat] || CAT["기타"]).label + (x.due ? " · 마감 " + md(x.due) : "") + (x.biz ? " · " + x.biz : "")];
+    if (x.why) L.push("설명: " + x.why);
+    if (x.steps && x.steps.length) { L.push("순서:"); x.steps.forEach(function (s, i) { L.push((i + 1) + ". " + s); }); }
+    if (x.choice) L.push("결정: " + (x.choice.q || "") + " [" + (x.choice.opts || []).join(" / ") + "]");
+    var files = (x.links || []).concat(x.images || []).map(function (l) { return l.path || l.url; }).filter(Boolean);
+    if (files.length) L.push("관련 파일: " + files.join(" , "));
+    if (x.src) L.push("출처: " + x.src);
+    if (x.note) L.push("내 메모: " + x.note);
+    return L.join("\n") + "\n\n고칠 점: ";
+  }
+  function linkify(s) { return esc(s).replace(/https?:\/\/[^\s)]+/g, function (u) { return '<a href="' + u + '" target="_blank" rel="noopener">' + u + "</a>"; }); }
+
+  function months(arr, key) { var m = {}; arr.forEach(function (x) { var d = (x[key] || "").slice(0, 7); if (d) m[d] = 1; }); return Object.keys(m).sort().reverse(); }
+  function viewDone() {
+    if (!sess) return needLogin();
+    var loc = Object.keys(S.items).map(function (k) { return S.items[k]; }).filter(function (x) { return x.kind === "task" && x.status === "done"; });
+    var src = S.remote.done || loc, seen = {}, rows = [];
+    src.concat(loc).forEach(function (x) { if (seen[x.id]) return; seen[x.id] = 1; if (S.dmonth && (x.doneAt || "").slice(0, 7) !== S.dmonth) return; if (S.dq && (x.title || "").toLowerCase().indexOf(S.dq.toLowerCase()) < 0) return; rows.push(x); });
+    rows.sort(function (a, b) { return (b.doneAt || "").localeCompare(a.doneAt || ""); });
+    var ms = months(src.concat(loc), "doneAt"); if (ms.indexOf(ymd().slice(0, 7)) < 0) ms.unshift(ymd().slice(0, 7));
+    var h = '<h1>사장님이 한 일</h1><div class="card"><div class="grid2"><input class="search" id="dq" placeholder="제목으로 찾기" value="' + esc(S.dq) + '"><select id="dmonth"><option value="">모든 달</option>' + ms.map(function (m) { return '<option value="' + m + '"' + (S.dmonth === m ? " selected" : "") + ">" + m.replace("-", "년 ") + "월</option>"; }).join("") + '</select></div><p class="note" style="margin:6px 0 0">이 기기에는 최근 ' + KEEP_DAYS + '일만 둡니다. 그보다 오래된 일은 <button class="btn sm ghost" data-act="rsearch" data-k="done">서버에서 찾기</button>' + (S.rbusy ? " 찾는 중…" : "") + "</p></div>";
+    if (!rows.length) return h + '<div class="empty">끝낸 일이 없습니다.</div>';
+    var last = "";
+    h += '<div class="card list">' + rows.map(function (x) {
+      var d = (x.doneAt || "").slice(0, 10), u = x.urls || {}, links = Object.keys(u).filter(function (k) { return u[k]; }).map(function (k) { return '<a href="' + esc(u[k]) + '" target="_blank" rel="noopener">' + esc(((x.fields || []).filter(function (f) { return f.key === k; })[0] || { label: k }).label) + "</a>"; });
+      var r = '<div class="row1"><div class="d">' + (d !== last ? md(d) : "") + '</div><div class="grow"><span class="area">' + esc((CAT[x.cat] || CAT["기타"]).label) + "</span>" + esc(x.title) + (links.length ? '<div class="note">' + links.join(" · ") + "</div>" : "") + (x.answer ? '<div class="note">답: ' + esc([x.answer.pick, x.answer.text].filter(Boolean).join(" / ")) + "</div>" : "") +
+        '</div><button class="btn sm ghost" data-act="toggle" data-id="' + esc(x.id) + '">되돌리기</button></div>';
+      last = d; return r;
+    }).join("") + "</div>";
+    return h;
+  }
+  function viewKl() {
+    if (!sess) return needLogin();
+    var all = Object.keys(S.items).map(function (k) { return S.items[k]; });
+    var kt = all.filter(function (x) { return x.kind === "ktask" && x.status !== "done" && x.status !== "cancel"; }).sort(sorter);
+    var loc = all.filter(function (x) { return x.kind === "log"; }), src = S.remote.log || loc, seen = {}, logs = [];
+    var areas = {}; src.concat(loc).forEach(function (x) { areas[x.area || "기타"] = (areas[x.area || "기타"] || 0) + 1; });
+    src.concat(loc).forEach(function (x) {
+      if (seen[x.id]) return; seen[x.id] = 1;
+      if (S.karea !== "전체" && (x.area || "기타") !== S.karea) return;
+      if (S.kmonth && (x.date || "").slice(0, 7) !== S.kmonth) return;
+      if (S.kq && ((x.title || "") + " " + (x.detail || "")).toLowerCase().indexOf(S.kq.toLowerCase()) < 0) return;
+      logs.push(x);
+    });
+    logs.sort(function (a, b) { return (b.date || "").localeCompare(a.date || "") || (b.t0 || 0) - (a.t0 || 0); });
+    var h = "<h1>클실장</h1>";
+    var ss = all.filter(function (x) { return x.kind === "sess"; }), grp = {};
+    ss.forEach(function (x) { (grp[x.group || "세션"] = grp[x.group || "세션"] || []).push(x); });
+    Object.keys(grp).forEach(function (g) {
+      var xs = grp[g].sort(function (a, b) { return (a.order || 0) - (b.order || 0); });
+      h += '<div class="card"><h2>' + esc(g) + "</h2>" + '<div class="list">' + xs.map(function (x) {
+        var ts = (x.tasks || []).map(function (tid) { var t = S.items[tid]; return t ? '<a href="#c_' + esc(tid) + '" data-act="goto" data-id="' + esc(tid) + '">' + (t.status === "done" ? "✓ " : "") + esc(t.title) + "</a>" : ""; }).filter(Boolean);
+        return '<div class="row1"><div class="grow"><b>' + esc(x.title) + '</b> <span class="badge' + (x.state === "사장님 차례" ? " pri1" : "") + '">' + esc(x.state || "") + "</span>" +
+          (x.detail ? '<div class="note">' + esc(x.detail) + "</div>" : "") + (ts.length ? '<div class="note">사장님 할 일: ' + ts.join(" · ") + "</div>" : "") + "</div></div>";
+      }).join("") + "</div></div>";
+    });
+    h += '<div class="card"><h2>클실장이 맡고 있는 일 ' + kt.length + "건</h2>" + (kt.length ? '<div class="list">' + kt.map(function (x) { return '<div class="row1"><div class="d">' + (x.due ? md(x.due) : "") + '</div><div class="grow"><span class="area">' + esc(x.area || "") + "</span>" + esc(x.title) + (x.why ? '<div class="note">' + esc(x.why) + "</div>" : "") + "</div></div>"; }).join("") + "</div>" : '<p class="note">지금 맡은 일이 없습니다.</p>') + "</div>";
+    var ar = Object.keys(areas).sort(function (a, b) { return areas[b] - areas[a]; });
+    var ms = months(src.concat(loc), "date");
+    h += '<div class="card"><h2>클실장이 한 일 — 분야별</h2><div class="chips"><button class="chip' + (S.karea === "전체" ? " on" : "") + '" data-karea="전체">전체</button>' + ar.map(function (a) { return '<button class="chip' + (S.karea === a ? " on" : "") + '" data-karea="' + esc(a) + '">' + esc(a) + " " + areas[a] + "</button>"; }).join("") + "</div>" +
+      '<div class="grid2"><input class="search" id="kq" placeholder="찾기(제목·내용)" value="' + esc(S.kq) + '"><select id="kmonth"><option value="">모든 달</option>' + ms.map(function (m) { return '<option value="' + m + '"' + (S.kmonth === m ? " selected" : "") + ">" + m.replace("-", "년 ") + "월</option>"; }).join("") + "</select></div>" +
+      '<p class="note" style="margin:6px 0 0">' + logs.length + '건 · 오래된 기록은 <button class="btn sm ghost" data-act="rsearch" data-k="log">서버에서 찾기</button>' + (S.rbusy ? " 찾는 중…" : "") + "</p></div>";
+    var last = "";
+    h += logs.length ? '<div class="card list">' + logs.slice(0, 300).map(function (x) {
+      var r = '<div class="row1"><div class="d">' + (x.date !== last ? md(x.date) : "") + '</div><div class="grow"><details><summary><span class="area">' + esc(x.area || "기타") + "</span>" + esc(x.title) + "</summary>" + (x.detail ? "<div>" + linkify(x.detail) + "</div>" : "") + "</details></div></div>";
+      last = x.date; return r;
+    }).join("") + "</div>" : '<div class="empty">기록이 없습니다.</div>';
+    return h;
+  }
+  function viewSet() {
+    var h = "<h1>설정</h1>";
+    if (!SB) h += '<div class="warnbox">동기화 설정(config.js)이 없습니다.</div>';
+    else if (!sess) h += '<div class="card"><h2>로그인 (필보드와 같은 계정)</h2><div class="grid2"><div><label class="note">이메일</label><input class="search" id="em" type="email" autocomplete="username"></div><div><label class="note">비밀번호</label><input class="search" id="pw" type="password" autocomplete="current-password"></div></div><div class="btns" style="margin-top:8px"><button class="btn" data-act="login">로그인</button></div><p class="note" id="syncMsg">' + esc(S.msg) + "</p></div>";
+    else h += '<div class="card"><h2>동기화 켜짐</h2><p class="note">' + esc(sess.user.email || "") + '</p><div class="btns"><button class="btn sm" data-act="sync">지금 동기화</button><button class="btn sm ghost" data-act="logout">로그아웃</button></div><p class="note" id="syncMsg">' + esc(S.msg) + "</p></div>";
+    h += '<div class="card"><h2>PC 도우미(폴더 사진·HTML 바로 열기)</h2>' + (S.local ? '<div class="okbox">연결됨 — [열기]·[사진 복사]·[폴더]가 바로 됩니다.</div>' :
+      '<p class="note">PC에서는 <b>twowings\\philtodo\\필투두_켜기.bat</b> 을 두 번 누르면 도우미가 켜지고 필투두가 열립니다(주소 http://127.0.0.1:8790). 그 화면에서 크롬 주소창 오른쪽 [설치] 아이콘을 누르면 PC 앱이 됩니다.</p>') + "</div>";
+    h += '<div class="card"><h2>폰에 설치</h2><p class="note">폰 크롬(아이폰은 사파리)에서 필투두 주소를 열고 메뉴 → [홈 화면에 추가]. 폰에서는 할 일 보기·체크·주소 넣기·결정이 되고, 폴더 사진 복사는 PC에서 합니다.</p></div>';
+    h += '<div class="card"><h2>이 기기 저장</h2><p class="note">열린 일 + 최근 ' + KEEP_DAYS + "일만 이 기기에 둡니다(지금 " + Object.keys(S.items).length + "건). 지난 기록은 서버에 있어 [한 일]·[클실장]에서 찾으면 가져옵니다.</p></div>";
+    return h;
+  }
+
+  /* ---------- 알림 ---------- */
+  var tt = 0;
+  function toast(m, act) {
+    var el = $("#toast"); el.innerHTML = esc(m) + (act ? ' <button id="tAct">' + esc(act.label) + "</button>" : ""); el.classList.add("on");
+    if (act) $("#tAct").onclick = function () { act.fn(); el.classList.remove("on"); };
+    clearTimeout(tt); tt = setTimeout(function () { el.classList.remove("on"); }, act ? 6000 : 2600);
+  }
+
+  /* ---------- 이벤트 ---------- */
+  document.addEventListener("click", function (ev) {
+    var t = ev.target.closest("[data-view],[data-mode],[data-cat],[data-karea],[data-act]"); if (!t) return;
+    if (t.hasAttribute("data-view")) { S.view = t.getAttribute("data-view"); LS.set("view", S.view); render(); window.scrollTo(0, 0); return; }
+    if (t.hasAttribute("data-mode")) { S.mode = t.getAttribute("data-mode"); LS.set("mode", S.mode); render(); return; }
+    if (t.hasAttribute("data-cat")) { S.cat = t.getAttribute("data-cat"); render(); return; }
+    if (t.hasAttribute("data-karea")) { S.karea = t.getAttribute("data-karea"); if (S.remote.log) remoteSearch("log"); else render(); return; }
+    var a = t.getAttribute("data-act"), id = t.getAttribute("data-id"), x = id && S.items[id];
+    if (id && !x) { ["done", "log"].forEach(function (k) { (S.remote[k] || []).forEach(function (r) { if (r.id === id) x = S.items[id] = r; }); }); }
+    if (a === "expand") { S.open[id] = !S.open[id]; render(); return; }
+    if (a === "goto") { ev.preventDefault(); S.view = "todo"; S.cat = "전체"; S.mode = "all"; S.open[id] = true; if (x && x.snoozeTo) S.open["sec_snooze"] = true; if (x && x.due && bucket(x) === "later") S.open["sec_later"] = true; render(); var el = document.getElementById("c_" + id); if (el) el.scrollIntoView({ block: "start" }); return; }
+    if (a === "toggle" && x) {
+      if (x.status === "done") { setUser(id, { status: "todo", doneAt: null, doneBy: null }); toast("다시 할 일로 돌렸습니다"); }
+      else { var miss = (x.fields || []).filter(function (f) { return f.need && !((x.urls || {})[f.key]); }); setUser(id, { status: "done", doneAt: nowIso(), doneBy: "사장님" }); toast(miss.length ? "완료! 올린 주소도 넣어 주시면 클실장이 링크를 채웁니다" : "완료했습니다", { label: "되돌리기", fn: function () { setUser(id, { status: "todo", doneAt: null, doneBy: null }); } }); }
+      return;
+    }
+    if (a === "snooze" && x) { var n = +t.getAttribute("data-n"); setUser(id, { snoozeTo: addDays(today(), n) }); S.open[id] = false; toast(md(addDays(today(), n)) + "로 미뤘습니다", { label: "되돌리기", fn: function () { setUser(id, { snoozeTo: null }); } }); return; }
+    if (a === "unsnooze" && x) { setUser(id, { snoozeTo: null }); return; }
+    if (a === "copy" && x) { copyText(x.copies[+t.getAttribute("data-i")].text); return; }
+    if (a === "req" && x) { copyText(reqText(x)).then(function () { toast("복사했습니다 — 새 대화창에 붙여넣고 '고칠 점'만 적어 주세요"); }); return; }
+    if (a === "para" && x) { copyText("[필투두 수정 요청] " + x.id + "\n할 일: " + x.title + "\n고칠 문단: " + x.steps[+t.getAttribute("data-i")] + "\n\n고칠 점: ").then(function () { toast("이 문단을 복사했습니다 — 새 대화창에 붙여넣고 고칠 점을 적어 주세요"); }); return; }
+    if (a === "img") { copyImage(t.getAttribute("data-p")); return; }
+    if (a === "folder") { openFolder(t.getAttribute("data-p")); return; }
+    if (a === "zoom") { var z = document.createElement("div"); z.className = "zoom"; z.innerHTML = '<img src="' + esc(t.getAttribute("data-src")) + '">'; z.onclick = function () { z.remove(); }; document.body.appendChild(z); return; }
+    if (a === "pick" && x) { var o = x.choice.opts[+t.getAttribute("data-i")], an = Object.assign({}, x.answer || {}); an.pick = an.pick === o ? null : o; an.at = nowIso(); var fin = !!(an.pick || an.text); setUser(id, { answer: an, status: fin ? "done" : "todo", doneAt: fin ? nowIso() : null, doneBy: fin ? "사장님" : null }); S.open[id] = true; render(); if (fin) toast("결정을 보냈습니다 — 클실장이 반영합니다"); return; }
+    if (a === "rsearch") { remoteSearch(t.getAttribute("data-k")); return; }
+    if (a === "sync") { doSync(); return; }
+    if (a === "logout") { setSess(null); S.items = {}; S.dirty = {}; S.since = ""; save(); render(); return; }
+    if (a === "login") {
+      var em = ($("#em").value || "").trim(), pw = $("#pw").value || "";
+      if (!em || !pw) { msg("이메일과 비밀번호를 넣어 주세요."); return; }
+      msg("로그인 중…");
+      api("/auth/v1/token?grant_type=password", { method: "POST", body: { email: em, password: pw } }).then(function (j) { setSess(j); S.view = "todo"; LS.set("view", "todo"); render(); doSync(); }, function (e) { msg("로그인 실패: " + koErr(e.message)); });
+    }
+  });
+  document.addEventListener("change", function (ev) {
+    var t = ev.target, a = t.getAttribute("data-act"), id = t.getAttribute("data-id"), x = id && S.items[id];
+    if (t.id === "dmonth") { S.dmonth = t.value; if (S.remote.done) remoteSearch("done"); else render(); return; }
+    if (t.id === "kmonth") { S.kmonth = t.value; if (S.remote.log) remoteSearch("log"); else render(); return; }
+    if (!x) return;
+    if (a === "step") { var ck = Object.assign({}, x.checks || {}); ck[t.getAttribute("data-i")] = t.checked; setUser(id, { checks: ck }); return; }
+    if (a === "url") { var u = Object.assign({}, x.urls || {}); u[t.getAttribute("data-k")] = t.value.trim(); setUser(id, { urls: u }); toast("주소를 저장했습니다"); return; }
+    if (a === "note") { setUser(id, { note: t.value }, true); toast("메모를 저장했습니다"); return; }
+    if (a === "ans") { var an = Object.assign({}, x.answer || {}); an.text = t.value.trim(); an.at = nowIso(); var fin = !!(an.pick || an.text); setUser(id, { answer: an, status: fin ? "done" : "todo", doneAt: fin ? nowIso() : null, doneBy: fin ? "사장님" : null }); toast("답을 보냈습니다"); return; }
+  });
+  document.addEventListener("toggle", function (ev) { var s = ev.target.getAttribute && ev.target.getAttribute("data-sec"); if (s) S.open["sec_" + s] = ev.target.open; }, true);
+  var st = 0;
+  document.addEventListener("input", function (ev) {
+    var t = ev.target; if (t.id !== "dq" && t.id !== "kq") return;
+    S[t.id] = t.value; clearTimeout(st);
+    st = setTimeout(function () { var pos = t.selectionStart; render(); var n = $("#" + t.id); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (e) { } } }, 350);
+  });
+  document.addEventListener("keydown", function (ev) { if (ev.key === "Enter" && (ev.target.id === "dq" || ev.target.id === "kq")) remoteSearch(ev.target.id === "dq" ? "done" : "log"); if (ev.key === "Enter" && ev.target.id === "pw") { var b = document.querySelector('[data-act="login"]'); if (b) b.click(); } });
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) { doSync(); render(); } });
+  window.addEventListener("focus", function () { doSync(); });
+  setInterval(function () { if (!document.hidden) doSync(); }, 60000);
+
+  window.PT_BUILD = window.PT_BUILD || (typeof PT_BUILD !== "undefined" ? PT_BUILD : "");
+  render(); checkLocal(); if (sess) doSync(); badge();
+})();
