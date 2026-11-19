@@ -444,7 +444,7 @@
     else if (!sess) h += '<div class="card"><h2>로그인 (필보드와 같은 계정)</h2><div class="grid2"><div><label class="note">이메일</label><input class="search" id="em" type="email" autocomplete="username"></div><div><label class="note">비밀번호</label><input class="search" id="pw" type="password" autocomplete="current-password"></div></div><div class="btns" style="margin-top:8px"><button class="btn" data-act="login">로그인</button></div><p class="note" id="syncMsg">' + esc(S.msg) + "</p></div>";
     else h += '<div class="card"><h2>동기화 켜짐</h2><p class="note">' + esc(sess.user.email || "") + '</p><div class="btns"><button class="btn sm" data-act="sync">지금 동기화</button><button class="btn sm ghost" data-act="logout">로그아웃</button></div><p class="note" id="syncMsg">' + esc(S.msg) + "</p></div>";
     h += '<div class="card"><h2>PC 도우미(폴더 사진·HTML 바로 열기)</h2>' + (S.local ? '<div class="okbox">연결됨 — [열기]·[사진 복사]·[폴더]가 바로 됩니다.</div>' :
-      '<p class="note">PC에서는 <b>twowings\\philtodo\\필투두_켜기.bat</b> 을 두 번 누르면 도우미가 켜지고 필투두가 열립니다(주소 http://127.0.0.1:8790). 그 화면에서 크롬 주소창 오른쪽 [설치] 아이콘을 누르면 PC 앱이 됩니다.</p>') + "</div>";
+      '<p class="note">PC를 켜면 도우미가 자동으로 켜집니다(윈도 시작 프로그램 「필투두 도우미」). 안 켜져 있으면 <b>twowings\\philtodo\\필투두_켜기.bat</b> 을 두 번 누르세요. PC 필투두 주소는 http://127.0.0.1:8790 이고, 크롬 주소창 오른쪽 [설치] 아이콘을 누르면 PC 앱이 됩니다.</p>') + "</div>";
     h += '<div class="card"><h2>폰에 설치</h2><p class="note">폰 크롬(아이폰은 사파리)에서 필투두 주소를 열고 메뉴 → [홈 화면에 추가]. 폰에서는 할 일 보기·체크·주소 넣기·결정이 되고, 폴더 사진 복사는 PC에서 합니다.</p></div>';
     h += '<div class="card"><h2>이 기기 저장</h2><p class="note">열린 일 + 최근 ' + KEEP_DAYS + "일만 이 기기에 둡니다(지금 " + Object.keys(S.items).length + "건). 지난 기록은 서버에 있어 [한 일]·[클실장]에서 찾으면 가져옵니다.</p></div>";
     return h;
