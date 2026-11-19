@@ -691,7 +691,24 @@
   window.addEventListener("focus", function () { doSync(); });
   setInterval(function () { if (!document.hidden) doSync(); }, 60000);
 
+  /* ---------- 맨 윗줄: 사장님 비즈니스 칸 (config.js PT_BIZ) ---------- */
+  var BIZ_ICON = {
+    plane: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/></svg>'
+  };
+  function renderBiz() {
+    var bar = $("#bizbar"), L = window.PT_BIZ || []; if (!bar) return;
+    var on = LS.get("biz", L[0] && L[0].id);
+    if (!L.some(function (b) { return b.id === on; }) && L[0]) on = L[0].id;
+    bar.innerHTML = L.map(function (b) {
+      return '<button type="button" class="biz' + (b.id === on ? " on" : "") + '" data-biz="' + esc(b.id) + '"' + (b.id === on ? ' aria-current="true"' : "") + ">" + (BIZ_ICON[b.icon] || '<i class="dot"></i>') + esc(b.name) + "</button>";
+    }).join("");
+  }
+  document.addEventListener("click", function (ev) {
+    var b = ev.target.closest("[data-biz]"); if (!b) return;
+    LS.set("biz", b.getAttribute("data-biz")); renderBiz();
+  });
+
   window.PT_BUILD = window.PT_BUILD || (typeof PT_BUILD !== "undefined" ? PT_BUILD : "");
-  render(); markSave(); checkLocal(); if (sess) doSync(); badge();
+  renderBiz(); render(); markSave(); checkLocal(); if (sess) doSync(); badge();
   (function () { var sy = LS.get("scroll", 0); if (sy > 0) setTimeout(function () { window.scrollTo(0, sy); }, 60); })();  // 저장해 둔 보던 자리로
 })();

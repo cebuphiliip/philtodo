@@ -6,10 +6,20 @@
 html, body { margin: 0; background: var(--cream); color: var(--ink); font: 15px/1.55 "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif; -webkit-text-size-adjust: 100%; }
 button, input, select, textarea { font: inherit; color: inherit; }
 a { color: #1c5fd1; }
-.top { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 10px; padding: 10px 14px calc(10px) 14px; padding-top: max(10px, env(safe-area-inset-top)); background: var(--navy); color: #fff; flex-wrap: wrap; }
-.brand { display: flex; align-items: center; gap: 8px; background: none; border: 0; color: #fff; cursor: pointer; padding: 0; font-weight: 800; font-size: 18px; }
-.brand small { display: block; font-size: 11px; font-weight: 500; opacity: .75; line-height: 1.1; }
-.mark { width: 30px; height: 30px; border-radius: 9px; background: var(--gold); color: var(--navy); display: grid; place-items: center; font-weight: 900; }
+.chrome { position: sticky; top: 0; z-index: 10; background: var(--navy); }
+.top { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--navy); color: #fff; flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: 9px; background: none; border: 0; color: #fff; cursor: pointer; padding: 0; font-weight: 800; font-size: 19px; letter-spacing: -.2px; }
+.mark { width: 34px; height: 34px; display: block; flex: 0 0 auto; }
+/* 맨 윗줄: 사장님 비즈니스 칸 — 폰·브라우저에서는 얇은 띠, PC 앱 창(wco)에서는 제목 표시줄 자리 */
+.bizbar { display: flex; align-items: center; gap: 6px; height: calc(34px + env(safe-area-inset-top, 0px)); padding: env(safe-area-inset-top, 0px) 14px 0; border-bottom: 1px solid rgba(255,255,255,.09); overflow-x: auto; scrollbar-width: none; }
+.bizbar::-webkit-scrollbar { display: none; }
+.biz { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 11px 0 9px; border-radius: 999px; border: 1px solid rgba(255,255,255,.2); background: transparent; color: rgba(255,255,255,.72); font-size: 12.5px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+.biz svg { width: 14px; height: 14px; }
+.biz .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--gold); }
+.biz.on { background: rgba(255,255,255,.14); border-color: rgba(255,255,255,.4); color: #fff; }
+.biz.on svg { color: var(--gold); }
+html.wco .bizbar { height: env(titlebar-area-height, 33px); max-width: calc(env(titlebar-area-x, 0px) + env(titlebar-area-width, 100vw)); padding: 0 0 0 calc(env(titlebar-area-x, 0px) + 10px); border-bottom: 0; -webkit-app-region: drag; app-region: drag; }
+html.wco .biz { -webkit-app-region: no-drag; app-region: no-drag; height: 23px; }
 .top nav { display: flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
 .top nav button { background: transparent; border: 1px solid rgba(255,255,255,.25); color: #fff; border-radius: 999px; padding: 6px 12px; cursor: pointer; font-size: 14px; }
 .top nav button.on { background: #fff; color: var(--navy); border-color: #fff; font-weight: 700; }
