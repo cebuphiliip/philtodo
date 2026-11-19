@@ -145,6 +145,7 @@
         items.forEach(function (x) {
           if (!x || !x.id) return;
           var l = S.items[x.id], o = l ? Object.assign({}, l) : {};
+          if (!l && !x.title) return; // 없는 할 일에 완료 표시만 온 경우는 건너뛴다
           Object.keys(x).forEach(function (k) { if (k === "force") return; if (l && (USER_KEYS.indexOf(k) >= 0 || k === "t0")) return; o[k] = x[k]; });
           if (!l) { if (o.kind !== "log" && o.kind !== "sess" && !o.status) o.status = "todo"; o.t0 = o.t0 || now; if (o.kind === "task") nNew++; }
           if (x.force) { Object.keys(x.force).forEach(function (k) { o[k] = x.force[k]; }); o.uu = now; }
