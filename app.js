@@ -659,7 +659,10 @@
     else h += '<div class="card"><h2>동기화 켜짐</h2><p class="note">' + esc(sess.user.email || "") + '</p><div class="btns"><button class="btn sm" data-act="sync">지금 동기화</button><button class="btn sm ghost" data-act="logout">로그아웃</button></div><p class="note" id="syncMsg">' + esc(S.msg) + "</p></div>";
     h += '<div class="card"><h2>PC 도우미(폴더 사진·HTML 바로 열기)</h2>' + (S.local ? '<div class="okbox">연결됨 — [열기]·[사진 복사]·[폴더]가 바로 됩니다.</div>' :
       '<p class="note">PC를 켜면 도우미가 자동으로 켜집니다(윈도 시작 프로그램 「필투두 도우미」). 안 켜져 있으면 <b>twowings\\philtodo\\필투두_켜기.bat</b> 을 두 번 누르세요. PC 필투두 주소는 http://127.0.0.1:8790 이고, 크롬 주소창 오른쪽 [설치] 아이콘을 누르면 PC 앱이 됩니다.</p>') + "</div>";
-    h += '<div class="card"><h2>폰에 설치</h2><p class="note">폰 크롬(아이폰은 사파리)에서 필투두 주소를 열고 메뉴 → [홈 화면에 추가]. 폰에서는 할 일 보기·체크·주소 넣기·결정이 되고, 폴더 사진 복사는 PC에서 합니다.</p></div>';
+    h += '<div class="card"><h2>폰에 설치</h2><p class="note">폰 크롬(아이폰은 사파리)에서 필투두 주소를 열고 메뉴 → [홈 화면에 추가]. 폰에서는 할 일 보기·체크·주소 넣기·결정이 되고, 폴더 사진 복사는 PC에서 합니다.</p>' +
+      /* 공용 install.js(원장 261120-01): 크롬은 설치 창, 아이폰·카톡은 기기별 안내 */
+      (window.PhilInstall && PhilInstall.installed() ? '<div class="okbox">지금 앱으로 열려 있습니다.</div>' :
+        '<button class="btn" type="button" onclick="window.PhilInstall&&PhilInstall.open(true)">이 기기에 설치</button>') + "</div>";
     h += '<div class="card"><h2>이 기기 저장</h2><p class="note">열린 일 + 최근 ' + KEEP_DAYS + "일만 이 기기에 둡니다(지금 " + Object.keys(S.items).length + "건). 지난 기록은 서버에 있어 맨 위 🔍 찾기나 [한 일]·[클실장]에서 찾으면 가져옵니다.</p></div>";
     h += '<div class="card"><h2>🔍 찾기</h2><p class="note">맨 위 칸에 낱말을 넣으면 할 일·한 일·💡 아이디어·클실장 기록을 한 번에 찾습니다. 제목뿐 아니라 순서·복사 문구·메모·내 답·올린 주소까지 보고, 낱말을 띄어 여러 개 넣으면 모두 들어간 것만 나옵니다. 날짜(11/19·11월)로도 찾습니다. PC에서는 <b>/</b> 키를 누르면 바로 찾기 칸으로 갑니다.</p></div>';
     h += '<div class="card"><h2>💾 저장</h2><p class="note">하다가 멈춰야 할 때 맨 위 <b>[💾 저장]</b>을 누르면 체크·주소·메모와 펼쳐 둔 카드, 보던 자리까지 그대로 남아 다음에 열면 이어서 하실 수 있습니다. 주소·메모는 서버에도 올라가 PC·폰 어디서 열어도 같습니다. 칸에 치는 글은 누르지 않아도 이 기기에 바로 남고, 아직 서버에 안 올라간 것이 있으면 버튼이 금색으로 바뀌고 개수가 보입니다. 쓰다 만 「직접 답하기」는 보내면 완료가 되므로 저장해도 이 기기에만 남겨 둡니다.</p></div>';
