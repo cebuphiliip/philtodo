@@ -129,11 +129,12 @@
     var first = !S.since, q;
     if (first) q = "&or=(" + encodeURIComponent("data->>status.eq.todo,updated_at.gt.\"" + new Date(Date.now() - KEEP_DAYS * 864e5).toISOString() + "\"") + ")";
     else q = "&updated_at=gt." + encodeURIComponent(new Date(Date.parse(S.since) - 5000).toISOString());
-    var got = 0, fresh0 = 0;
+    var got = 0, fresh0 = 0, freshC = 0;
     return fresh().then(function () { return pullPage(q, 0, []); }).then(function (rows) {
       rows.forEach(function (row) {
         var r = row.data, l = S.items[row.id];
-        if (!l && r.kind !== "log" && (r.t0 || 0) > Date.now() - 864e5) fresh0++;
+        if (!l && r.kind === "check" && r.status !== "done") freshC++;
+        else if (!l && r.kind !== "log" && (r.t0 || 0) > Date.now() - 864e5) fresh0++;
         var m = merge(l, r);
         if (JSON.stringify(m) !== JSON.stringify(r)) S.dirty[row.id] = 1;
         if (!l || JSON.stringify(l) !== JSON.stringify(m)) got++;
@@ -151,7 +152,7 @@
     }).then(function (sent) {
       S.busy = false;
       msg("동기화 완료 " + new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" }) + " · 받은 것 " + got + " · 보낸 것 " + sent);
-      if (got) { render(); if (fresh0 && !first) toast("클실장이 새 할 일 " + fresh0 + "건을 올렸습니다"); }
+      if (got) { render(); if (freshC && !first) chkToast(freshC); else if (fresh0 && !first) toast("클실장이 새 할 일 " + fresh0 + "건을 올렸습니다"); }
       badge(); outbox();
     }).catch(function (e) { S.busy = false; msg("동기화 실패: " + koErr(e.message || String(e))); });
   }
@@ -169,19 +170,19 @@
       var p = miss.length ? fresh().then(function () { return api("/rest/v1/pt_items?select=id,data&id=in.(" + encodeURIComponent(miss.map(function (id) { return '"' + id + '"'; }).join(",")) + ")", { auth: true }); }) : Promise.resolve([]);
       return p.then(function (rows) {
         (rows || []).forEach(function (r) { S.items[r.id] = merge(S.items[r.id], r.data); });
-        var now = Date.now(), nNew = 0;
+        var now = Date.now(), nNew = 0, nChk = 0;
         items.forEach(function (x) {
           if (!x || !x.id) return;
           var l = S.items[x.id], o = l ? Object.assign({}, l) : {};
           if (!l && !x.title) return; // 없는 할 일에 완료 표시만 온 경우는 건너뛴다
           Object.keys(x).forEach(function (k) { if (k === "force") return; if (l && (USER_KEYS.indexOf(k) >= 0 || k === "t0")) return; o[k] = x[k]; });
-          if (!l) { if (o.kind !== "log" && o.kind !== "sess" && !o.status) o.status = "todo"; o.t0 = o.t0 || now; if (o.kind === "task") nNew++; }
+          if (!l) { if (o.kind !== "log" && o.kind !== "sess" && !o.status) o.status = "todo"; o.t0 = o.t0 || now; if (o.kind === "task") nNew++; if (o.kind === "check") nChk++; }
           if (x.force) { Object.keys(x.force).forEach(function (k) { o[k] = x.force[k]; }); o.uu = now; }
           o.u = now; S.items[x.id] = o; S.dirty[x.id] = 1;
         });
         save(); render();
         return fetch("/api/outbox/ack", { method: "POST", headers: { "Content-Type": "application/json", "X-PT": "1" }, body: JSON.stringify({ files: files.map(function (f) { return f.name; }) }) }).then(function () {
-          obusy = false; if (nNew) toast("클실장이 새 할 일 " + nNew + "건을 올렸습니다"); doSync();
+          obusy = false; if (nChk) chkToast(nChk); else if (nNew) toast("클실장이 새 할 일 " + nNew + "건을 올렸습니다"); doSync();
         });
       });
     }).catch(function () { obusy = false; });
@@ -195,7 +196,7 @@
     });
   }
   function badge() {
-    var n = list().filter(function (x) { var b = bucket(x); return b === "late" || b === "today"; }).length;
+    var n = list().filter(function (x) { var b = bucket(x); return b === "late" || b === "today"; }).length + newChecks().filter(function (x) { return x.lv === 1; }).length;
     try { if (navigator.setAppBadge) n ? navigator.setAppBadge(n) : navigator.clearAppBadge(); } catch (e) { }
   }
 
@@ -309,7 +310,7 @@
     G.todo.sort(sorter);
     G.done.sort(function (a, b) { return (b.doneAt || "").localeCompare(a.doneAt || ""); });
     G.idea.sort(function (a, b) { return (b.x.t0 || 0) - (a.x.t0 || 0) || a.i - b.i; });
-    var KO = { ktask: 0, sess: 1, log: 2 };
+    var KO = { check: -1, ktask: 0, sess: 1, log: 2 };
     G.kl.sort(function (a, b) { return (KO[a.kind] || 0) - (KO[b.kind] || 0) || (b.date || "").localeCompare(a.date || "") || (b.t0 || 0) - (a.t0 || 0); });
     var total = G.todo.length + G.idea.length + G.done.length + G.kl.length, f = S.fk;
     h += '<div class="chips">' + [["전체", total], ["할 일", G.todo.length], ["💡 아이디어", G.idea.length], ["한 일", G.done.length], ["클실장", G.kl.length]].map(function (c) {
@@ -326,7 +327,7 @@
     }).join("") + "</div>");
     if (G.done.length) h += sec("한 일", "사장님이 한 일", G.done.length + "건" + (G.done.length > 100 ? " · 앞 100건" : ""), cap(G.done, 100).map(card).join(""));
     if (G.kl.length) {
-      var KN = { ktask: "클실장 맡은 일", sess: "세션 정리", log: "클실장이 한 일" };
+      var KN = { ktask: "클실장 맡은 일", sess: "세션 정리", log: "클실장이 한 일", check: "체크 보고" };
       h += sec("클실장", "클실장", G.kl.length + "건" + (G.kl.length > 150 ? " · 앞 150건 — 낱말을 더 넣으면 좁혀집니다" : ""), '<div class="card list">' + cap(G.kl, 150).map(function (x) {
         var d = x.kind === "log" ? x.date : x.due || (x.t0 ? ymd(new Date(x.t0)) : "");
         return '<div class="row1"><div class="d">' + (d ? md(d) : "") + '</div><div class="grow"><details><summary><span class="area">' + esc(KN[x.kind] || "기록") + (x.area ? " · " + esc(x.area) : "") + "</span>" + mark(esc(x.title)) + (x.state ? ' <span class="badge">' + esc(x.state) + "</span>" : "") + "</summary>" +
@@ -378,8 +379,9 @@
     var v = S.view;
     document.querySelectorAll(".top nav button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-view") === v); });
     var nt = $("#navTodo"); if (nt) nt.textContent = list().length;
-    var h = v === "find" ? viewFind() : v === "done" ? viewDone() : v === "kl" ? viewKl() : v === "set" ? viewSet() : v === "idea" ? viewIdeas() : viewTodo();
+    var h = v === "find" ? viewFind() : v === "check" ? viewCheck() : v === "done" ? viewDone() : v === "kl" ? viewKl() : v === "set" ? viewSet() : v === "idea" ? viewIdeas() : viewTodo();
     var ni = $("#navIdea"); if (ni) { var fi = sess ? freshIdeas().length : 0; ni.textContent = fi; ni.style.display = fi ? "" : "none"; }
+    chkBtn();
     $("#app").innerHTML = h;
     $("#ver").textContent = "필투두 " + (window.PT_BUILD || "") + (S.local ? " · PC 도우미 연결됨" : "");
   }
@@ -394,7 +396,9 @@
     var mins = must.reduce(function (a, x) { return a + (x.mins || 0); }, 0);
     var dec = all.filter(function (x) { return x.cat === "판단" && bucket(x) !== "snooze"; }).length;
     var doneToday = Object.keys(S.items).map(function (k) { return S.items[k]; }).filter(function (x) { return x.kind === "task" && x.status === "done" && (x.doneAt || "").slice(0, 10) === td; }).length;
-    var h = '<div class="sum"><div><b>' + all.length + '</b><span>남은 일 전체</span></div><div class="hot"><b>' + must.length + "</b><span>오늘 꼭" + (mins ? " · 약 " + mins + "분" : "") + '</span></div><div><b>' + dec + '</b><span>결정 기다리는 것</span></div><div><b>' + doneToday + '</b><span>오늘 끝낸 일</span></div><div class="idea-tile" data-view="idea"><b>💡 ' + freshIdeas().length + '</b><span>새 제안·아이디어 보기</span></div></div>';
+    var nc = newChecks(), hc = nc.filter(function (x) { return x.lv === 1; }).length;
+    var h = nc.length ? '<button type="button" class="ckstrip' + (hc ? " hot" : "") + '" data-view="check"><b>체크 ' + nc.length + "</b><span>" + (hc ? "급한 보고 " + hc + "건 — " : "") + "클실장이 꼭 알려 드릴 것이 있습니다</span><i>보기 →</i></button>" : "";
+    h += '<div class="sum"><div><b>' + all.length + '</b><span>남은 일 전체</span></div><div class="hot"><b>' + must.length + "</b><span>오늘 꼭" + (mins ? " · 약 " + mins + "분" : "") + '</span></div><div><b>' + dec + '</b><span>결정 기다리는 것</span></div><div><b>' + doneToday + '</b><span>오늘 끝낸 일</span></div><div class="idea-tile" data-view="idea"><b>💡 ' + freshIdeas().length + '</b><span>새 제안·아이디어 보기</span></div></div>';
     h += '<div class="mode"><button data-mode="all" class="' + (S.mode === "all" ? "on" : "") + '">전체 보기</button><button data-mode="must" class="' + (S.mode === "must" ? "on" : "") + '">시간 없을 때 — 꼭 할 것만</button></div>';
     var pool = S.mode === "must" ? must : all, counts = {};
     pool.forEach(function (x) { counts[x.cat] = (counts[x.cat] || 0) + 1; });
@@ -435,13 +439,7 @@
       var ck = x.checks || {};
       h += "<h3>순서</h3><ol class=\"steps\">" + x.steps.map(function (s, i) { return '<li class="' + (ck[i] ? "ok" : "") + '"><input type="checkbox" data-act="step" data-id="' + id + '" data-i="' + i + '"' + (ck[i] ? " checked" : "") + '><span class="grow">' + mark(linkify(s)) + '</span><button class="pc" data-act="para" data-id="' + id + '" data-i="' + i + '" title="이 문단만 복사해 클실장에게 고쳐 달라고 하기">⧉</button></li>'; }).join("") + "</ol>";
     }
-    if (x.links && x.links.length) {
-      h += "<h3>바로 열기</h3><div class=\"btns\">" + x.links.map(function (l) {
-        if (l.url) return '<a class="btn ghost" target="_blank" rel="noopener" href="' + esc(l.url) + '">' + esc(l.label) + " ↗</a>";
-        return '<a class="btn' + (S.local ? "" : " ghost") + '" target="_blank" rel="noopener" href="' + esc(fileUrl(l.path)) + '">' + esc(l.label) + (S.local ? "" : " (PC)") + "</a>" +
-          (S.local ? '<button class="btn sm ghost" data-act="folder" data-p="' + esc(l.path) + '" title="탐색기에서 열기">폴더</button>' : "");
-      }).join("") + "</div>" + (S.local ? "" : '<p class="note">(PC) 표시는 PC에서 필투두 도우미가 켜져 있을 때 열립니다.</p>');
-    }
+    if (x.links && x.links.length) h += "<h3>바로 열기</h3>" + linkBtns(x.links);
     if (x.copies && x.copies.length) {
       h += "<h3>복사해서 붙여넣기</h3>" + x.copies.map(function (c, i) { return '<div class="copy"><div class="ch"><b>' + esc(c.label) + '</b><button class="btn sm" data-act="copy" data-id="' + id + '" data-i="' + i + '">복사</button></div><pre>' + mark(esc(c.text)) + "</pre></div>"; }).join("");
     }
@@ -473,6 +471,77 @@
       '<span class="src">' + (x.src ? "출처: " + esc(x.src) : "") + (x.after ? (x.src ? " · " : "") + "끝나면 클실장이: " + esc(x.after) : "") + "</span></div>";
     return h + "</div>";
   }
+  function linkBtns(links) {
+    var pc = false;
+    var h = '<div class="btns">' + links.map(function (l) {
+      if (l.url) return '<a class="btn ghost" target="_blank" rel="noopener" href="' + esc(l.url) + '">' + esc(l.label) + " ↗</a>";
+      pc = true;
+      return '<a class="btn' + (S.local ? "" : " ghost") + '" target="_blank" rel="noopener" href="' + esc(fileUrl(l.path)) + '">' + esc(l.label) + (S.local ? "" : " (PC)") + "</a>" +
+        (S.local ? '<button class="btn sm ghost" data-act="folder" data-p="' + esc(l.path) + '" title="탐색기에서 열기">폴더</button>' : "");
+    }).join("") + "</div>";
+    return h + (pc && !S.local ? '<p class="note">(PC) 표시는 PC에서 필투두 도우미가 켜져 있을 때 열립니다.</p>' : "");
+  }
+
+  /* ---------- ✔ 체크 — 클실장이 사장님께 꼭 알려 드릴 보고(2026-11-20 사장님, 원장 261120-07) ----------
+     할 일(사장님이 해야 하는 것)·💡 아이디어(제안)와 따로, '알아야 하는 것'만 모은다. 사업이 늘어도 맨 윗줄 오른쪽 [체크] 하나로 전부.
+     항목: kind=check, lv 1 급함 / 2 알림, biz(투윙스·솔타나… → PT_BIZ 로 묶음), detail, links, task(관련 할 일 id).
+     사장님 몫: status(todo 안 읽음 → done 확인함)·doneAt·note(클실장에게 답) — 서버 pt_agent_upsert 가 지켜 준다. */
+  function allChecks() { return Object.keys(S.items).map(function (k) { return S.items[k]; }).filter(function (x) { return x.kind === "check" && x.status !== "cancel"; }); }
+  function newChecks() { return allChecks().filter(function (x) { return x.status !== "done"; }); }
+  function bizOf(x) {
+    var L = window.PT_BIZ || [], b = x.biz || "";
+    for (var i = 0; i < L.length; i++) if (L[i].name === b || (L[i].has || []).indexOf(b) >= 0) return L[i].name;
+    return b || (L[0] ? L[0].name : "");
+  }
+  function hm(t) { var d = new Date(t); return md(ymd(d)) + " " + ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2); }
+  function chkToast(n) { toast("클실장 보고가 " + n + "건 왔습니다 — 맨 위 [체크]", { label: "보기", fn: function () { clearFind(); S.view = "check"; render(); window.scrollTo(0, 0); } }); }
+  function chkBtn() {
+    var b = $("#chkBtn"); if (!b) return;
+    var nc = sess ? newChecks() : [], hot = nc.some(function (x) { return x.lv === 1; });
+    b.classList.toggle("on", S.view === "check");
+    b.classList.toggle("hot", hot);
+    var n = $("#navChk"); if (n) { n.textContent = nc.length; n.style.display = nc.length ? "" : "none"; }
+    b.title = nc.length ? "클실장 보고 " + nc.length + "건" + (hot ? " — 급한 것 있음" : "") : "클실장이 꼭 알려 드릴 보고(지금은 새 것 없음)";
+  }
+  function ckCard(x, open) {
+    var id = esc(x.id), read = x.status === "done", lv = x.lv === 1 ? 1 : 2;
+    var h = '<div class="card ck lv' + lv + (read ? " read" : "") + '" id="c_' + id + '"><div class="ckh"><span class="lv">' + (lv === 1 ? "급함" : "알림") + "</span>" +
+      (x.t0 ? '<span class="when">' + hm(x.t0) + "</span>" : "") + (x.biz ? '<span class="bz">' + esc(x.biz) + "</span>" : "") + (read ? '<span class="when">확인 ' + esc(md((x.doneAt || "").slice(0, 10))) + "</span>" : "") + "</div>";
+    h += '<div class="t">' + esc(x.title) + "</div>";
+    if (!open) return h + '<button class="btn sm ghost ckmore" data-act="expand" data-id="' + id + '">펼쳐 보기</button></div>';
+    if (x.detail) h += '<div class="ckb">' + linkify(x.detail) + "</div>";
+    if (x.links && x.links.length) h += linkBtns(x.links);
+    var tk = x.task && S.items[x.task];
+    if (x.task) h += '<p class="note cktask">관련 할 일: ' + (tk ? '<a href="#c_' + esc(x.task) + '" data-act="goto" data-id="' + esc(x.task) + '">' + (tk.status === "done" ? "✓ " : "") + esc(tk.title) + "</a>" : esc(x.task)) + "</p>";
+    h += '<div class="ckf">' + (read ? '<button class="btn sm ghost" data-act="ckseen" data-id="' + id + '">안 읽은 것으로</button>' : '<button class="btn ok" data-act="ckseen" data-id="' + id + '">✓ 확인했어요</button>') +
+      '<button class="btn sm ghost" data-act="ckcopy" data-id="' + id + '" title="복사해서 새 대화창에 붙여넣고 클실장과 더 얘기하기">⧉ 클실장과 얘기하기</button>' +
+      (read && open ? '<button class="btn sm ghost" data-act="expand" data-id="' + id + '">접기</button>' : "") + "</div>";
+    h += '<details class="ckn"' + (x.note || S.drafts[dk("note", x.id, "")] != null ? " open" : "") + '><summary class="note">클실장에게 한마디(선택)</summary><textarea data-act="note" data-id="' + id + '" placeholder="예: 알겠어, 다음 주에 처리하자 / 이건 더 자세히 알려 줘">' + esc(draftOf("note", x.id, "", x.note || "")) + "</textarea></details>";
+    return h + "</div>";
+  }
+  function viewCheck() {
+    var h = '<h1>체크 <span class="h1s">— 꼭 아셔야 할 것</span></h1>';
+    if (!sess) return h + needLogin();
+    var all = allChecks(), L = window.PT_BIZ || [], f = S.ckbiz || "전체", groups = {};
+    all.forEach(function (x) { var g = bizOf(x); groups[g] = (groups[g] || 0) + 1; });
+    var gs = Object.keys(groups);
+    if (gs.length > 1 || L.length > 1) h += '<div class="chips"><button class="chip' + (f === "전체" ? " on" : "") + '" data-ckbiz="전체">전체 ' + all.length + "</button>" + gs.map(function (g) { return '<button class="chip' + (f === g ? " on" : "") + '" data-ckbiz="' + esc(g) + '">' + esc(g) + " " + groups[g] + "</button>"; }).join("") + "</div>";
+    var shown = all.filter(function (x) { return f === "전체" || bizOf(x) === f; });
+    var un = shown.filter(function (x) { return x.status !== "done"; }).sort(function (a, b) { return (a.lv === 1 ? 0 : 1) - (b.lv === 1 ? 0 : 1) || (b.t0 || 0) - (a.t0 || 0); });
+    var rd = shown.filter(function (x) { return x.status === "done"; }).sort(function (a, b) { return (b.doneAt || "").localeCompare(a.doneAt || ""); });
+    h += '<p class="note ckintro">클실장이 사장님께 직접 알려 드릴 것만 모았습니다 — 해야 할 일은 [할 일]에, 제안은 [💡 아이디어]에 따로 있습니다. 읽으셨으면 [✓ 확인했어요]를 눌러 주세요. 사업이 늘어도 모든 사업의 보고가 여기 한곳에 옵니다.</p>';
+    if (un.length) {
+      var hot = un.filter(function (x) { return x.lv === 1; }).length;
+      h += '<div class="sec ck-sec"><h2>새 보고</h2><span class="cnt">' + un.length + "건" + (hot ? " · 급한 것 " + hot + "건" : "") + "</span>" + (un.length - hot > 1 ? '<button class="btn sm ghost" data-act="ckall" title="급함은 하나씩 확인해 주세요">알림 ' + (un.length - hot) + "건 모두 확인</button>" : "") + "</div>";
+      h += un.map(function (x) { return ckCard(x, true); }).join("");
+    } else h += '<div class="empty ckempty"><b>지금 꼭 아셔야 할 새 보고는 없습니다.</b><br>급한 일이 생기면 클실장이 여기에 올리고, 맨 위 [체크]에 숫자가 뜹니다.</div>';
+    if (rd.length) h += '<div class="sec"><h2>확인한 것</h2><span class="cnt">' + rd.length + "건 · 최근 " + KEEP_DAYS + "일(지난 것은 맨 위 🔍 찾기)</span></div><details" + (S.open.sec_ckread ? " open" : "") + ' data-sec="ckread"><summary class="note">펼쳐 보기</summary>' + rd.map(function (x) { return ckCard(x, !!S.open[x.id]); }).join("") + "</details>";
+    return h;
+  }
+  function ckText(x) {
+    return "[필투두 체크] " + x.id + "\n보고: " + x.title + (x.detail ? "\n내용: " + x.detail : "") + (x.task ? "\n관련 할 일: " + x.task : "") + "\n\n내 생각: ";
+  }
+
   /* 클실장 제안·아이디어 — 사장님이 가장 즐겨 보는 부분이라 노란 상자로 맨 위에, 하나씩 반응 버튼 */
   var REACT = [["진행", "좋아요, 진행해"], ["보류", "나중에"], ["안 함", "안 할래요"]];
   function ideasBox(x) {
@@ -607,8 +676,9 @@
 
   /* ---------- 이벤트 ---------- */
   document.addEventListener("click", function (ev) {
-    var t = ev.target.closest("[data-view],[data-mode],[data-cat],[data-karea],[data-ifilter],[data-fk],[data-act]"); if (!t) return;
+    var t = ev.target.closest("[data-view],[data-mode],[data-cat],[data-karea],[data-ifilter],[data-fk],[data-ckbiz],[data-act]"); if (!t) return;
     if (t.hasAttribute("data-ifilter")) { S.ifilter = t.getAttribute("data-ifilter"); render(); return; }
+    if (t.hasAttribute("data-ckbiz")) { S.ckbiz = t.getAttribute("data-ckbiz"); render(); return; }
     if (t.hasAttribute("data-fk")) { S.fk = t.getAttribute("data-fk"); render(); return; }
     if (t.hasAttribute("data-view")) { clearFind(); S.view = t.getAttribute("data-view"); LS.set("view", S.view); render(); window.scrollTo(0, 0); return; }
     if (t.hasAttribute("data-mode")) { S.mode = t.getAttribute("data-mode"); LS.set("mode", S.mode); render(); return; }
@@ -629,6 +699,18 @@
     if (a === "copy" && x) { copyText(x.copies[+t.getAttribute("data-i")].text); return; }
     if (a === "react" && x) { var rv = Object.assign({}, x.react || {}), ii = t.getAttribute("data-i"), vv = t.getAttribute("data-v"); if (rv[ii] === vv) delete rv[ii]; else rv[ii] = vv; setUser(id, { react: rv }); toast(rv[ii] === "진행" ? "좋습니다 — 클실장이 다음 작업 때 진행합니다" : rv[ii] ? "기록했습니다" : "답을 지웠습니다"); return; }
     if (a === "ideacopy" && x) { var dd = x.ideas[+t.getAttribute("data-i")]; copyText("[필투두 아이디어] " + x.id + " #" + t.getAttribute("data-i") + "\n어디서: " + x.title + "\n" + (dd.t === "아이디어" ? "아이디어" : "실장 제안") + ": " + dd.text + "\n\n내 생각: ").then(function () { toast("복사했습니다 — 새 대화창에 붙여넣고 생각을 적어 주세요"); }); return; }
+    if (a === "ckseen" && x) {
+      if (x.status === "done") { setUser(id, { status: "todo", doneAt: null, doneBy: null }); toast("안 읽은 것으로 돌렸습니다"); }
+      else { S.open[id] = false; setUser(id, { status: "done", doneAt: nowIso(), doneBy: "사장님" }); badge(); toast("확인했습니다", { label: "되돌리기", fn: function () { setUser(id, { status: "todo", doneAt: null, doneBy: null }); badge(); } }); }
+      return;
+    }
+    if (a === "ckall") {
+      var f0 = S.ckbiz || "전체", ids = newChecks().filter(function (c) { return c.lv !== 1 && (f0 === "전체" || bizOf(c) === f0); }).map(function (c) { return c.id; });
+      ids.forEach(function (cid) { setUser(cid, { status: "done", doneAt: nowIso(), doneBy: "사장님" }, true); });
+      render(); badge(); toast("알림 " + ids.length + "건을 확인했습니다", { label: "되돌리기", fn: function () { ids.forEach(function (cid) { setUser(cid, { status: "todo", doneAt: null, doneBy: null }, true); }); render(); badge(); } });
+      return;
+    }
+    if (a === "ckcopy" && x) { copyText(ckText(x)).then(function () { toast("복사했습니다 — 새 대화창에 붙여넣고 생각을 적어 주세요"); }); return; }
     if (a === "req" && x) { copyText(reqText(x)).then(function () { toast("복사했습니다 — 새 대화창에 붙여넣고 '고칠 점'만 적어 주세요"); }); return; }
     if (a === "para" && x) { copyText("[필투두 수정 요청] " + x.id + "\n할 일: " + x.title + "\n고칠 문단: " + x.steps[+t.getAttribute("data-i")] + "\n\n고칠 점: ").then(function () { toast("이 문단을 복사했습니다 — 새 대화창에 붙여넣고 고칠 점을 적어 주세요"); }); return; }
     if (a === "img") { copyImage(t.getAttribute("data-p")); return; }
@@ -701,7 +783,10 @@
     if (!L.some(function (b) { return b.id === on; }) && L[0]) on = L[0].id;
     bar.innerHTML = L.map(function (b) {
       return '<button type="button" class="biz' + (b.id === on ? " on" : "") + '" data-biz="' + esc(b.id) + '"' + (b.id === on ? ' aria-current="true"' : "") + ">" + (BIZ_ICON[b.icon] || '<i class="dot"></i>') + esc(b.name) + "</button>";
-    }).join("");
+    }).join("") +
+      // 맨 윗줄 제일 오른쪽 = [체크] — 사업 칸이 몇 개가 되든 모든 사업의 클실장 보고를 여기서 한 번에(원장 261120-07)
+      '<button type="button" class="chkbtn" id="chkBtn" data-view="check"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M7.5 12.3l3 3 6-6.3" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>체크<b id="navChk"></b></button>';
+    chkBtn();
   }
   document.addEventListener("click", function (ev) {
     var b = ev.target.closest("[data-biz]"); if (!b) return;
