@@ -342,7 +342,8 @@
   function fileUrl(p) { return helperBase() + "/f/" + p.split("/").map(encodeURIComponent).join("/"); }
   function checkLocal() {
     if (!/^(127\.0\.0\.1|localhost)$/.test(location.hostname)) return;
-    fetch("/api/ping", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (j) { S.local = !!j.ok; render(); }).catch(function () { });
+    /* PC 도우미가 꺼져 있으면 화면 맨 위에 알린다 — 꺼진 줄 모르고 쓰다 클실장 보낼 함·사진 복사가 멈췄던 일(2026-11-21, 원장 261121-51) */
+    fetch("/api/ping", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (j) { S.local = !!j.ok; S.helperDown = !j.ok; render(); }).catch(function () { S.local = false; S.helperDown = true; render(); });
   }
   function openFolder(p) {
     if (!S.local) { toast("폴더 열기는 PC 필투두(127.0.0.1:8790)에서 됩니다"); return; }
@@ -383,6 +384,7 @@
     /* 화면 하나가 오류로 멈추면 앱 전체가 그대로 굳어 '검색이 안 된다'로 보인다 — 오류를 화면에 알리고 나머지는 계속 (원장 261121-50) */
     try { h = v === "find" ? viewFind() : v === "check" ? viewCheck() : v === "done" ? viewDone() : v === "kl" ? viewKl() : v === "set" ? viewSet() : v === "idea" ? viewIdeas() : viewTodo(); }
     catch (e) { if (window.console) console.error(e); h = '<div class="card"><h2>화면을 그리다 문제가 생겼습니다</h2><p class="note">' + esc(e && e.message || e) + '</p><p class="note">맨 위 메뉴로 다른 화면에 갔다가 다시 와 보시고, 계속되면 이 문장을 클실장에게 알려 주세요.</p></div>'; }
+    if (S.helperDown) h = '<div class="helperdown"><b>PC 도우미가 꺼져 있습니다.</b> 할 일 체크·동기화는 되지만 클실장이 올린 새 할 일·사진 복사·폴더 열기가 멈춥니다. 클실장에게 <b>"도우미 켜 줘"</b>라고 하시거나, PC를 다시 켜면 자동으로 켜집니다. <button class="btn sm ghost" type="button" onclick="location.reload()">다시 확인</button></div>' + h;
     var ni = $("#navIdea"); if (ni) { var fi = sess ? freshIdeas().length : 0; ni.textContent = fi; ni.style.display = fi ? "" : "none"; }
     chkBtn();
     $("#app").innerHTML = h;

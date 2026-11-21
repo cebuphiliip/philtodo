@@ -229,3 +229,4 @@ mark { background: #ffe066; color: inherit; padding: 0 1px; border-radius: 3px; 
 .ckmore { margin-top: 6px; }
 .ck-sec .btn { margin-left: auto; }
 .ckempty b { color: var(--ink); }
+.helperdown { margin: 12px 0; padding: 10px 14px; border-radius: 12px; background: #fff4e5; border: 1px solid #f0b46b; color: #7a3d00; font-size: 14px; }
