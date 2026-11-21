@@ -399,8 +399,8 @@
     var nc = newChecks(), hc = nc.filter(function (x) { return x.lv === 1; }).length;
     var h = nc.length ? '<button type="button" class="ckstrip' + (hc ? " hot" : "") + '" data-view="check"><b>체크 ' + nc.length + "</b><span>" + (hc ? "급한 보고 " + hc + "건 — " : "") + "클실장이 꼭 알려 드릴 것이 있습니다</span><i>보기 →</i></button>" : "";
     /* 진행중 칸 — 누르면 진행중 할 일만, 다시 누르면 전체 (2026-11-21 사장님, 원장 261121-37) */
-    var prog = all.filter(progOf), pOn = S.mode === "prog";
-    var pTile = '<div class="prog-tile' + (prog.length ? " has" : "") + (pOn ? " on" : "") + '"' + (prog.length || pOn ? ' data-mode="' + (pOn ? "all" : "prog") + '" role="button" title="' + (pOn ? "전체 보기로 돌아가기" : "진행중인 할 일만 보기") + '"' : "") + '><b><span class="hl">' + prog.length + "</span></b><span>" + (pOn ? "진행중만 보는 중" : "진행중 보기") + "</span></div>";
+    var prog = all.filter(progOf), pOn = S.mode === "prog", nStall = prog.filter(function (x) { return progOf(x).stall; }).length;
+    var pTile = '<div class="prog-tile' + (prog.length ? " has" : "") + (pOn ? " on" : "") + '"' + (prog.length || pOn ? ' data-mode="' + (pOn ? "all" : "prog") + '" role="button" title="' + (pOn ? "전체 보기로 돌아가기" : "진행중인 할 일만 보기") + '"' : "") + '><b><span class="hl">' + prog.length + "</span></b><span>" + (pOn ? "진행중만 보는 중" : "진행중 보기") + (nStall ? ' <em class="stallc">멈춤 ' + nStall + "</em>" : "") + "</span></div>";
     h += '<div class="sum"><div><b>' + all.length + '</b><span>남은 일 전체</span></div>' + pTile + '<div class="hot"><b>' + must.length + "</b><span>오늘 꼭" + (mins ? " · 약 " + mins + "분" : "") + '</span></div><div><b>' + dec + '</b><span>결정 기다리는 것</span></div><div><b>' + doneToday + '</b><span>오늘 끝낸 일</span></div><div class="idea-tile" data-view="idea"><b>💡 ' + freshIdeas().length + '</b><span>새 제안·아이디어 보기</span></div></div>';
     h += '<div class="mode"><button data-mode="all" class="' + (S.mode === "all" ? "on" : "") + '">전체 보기</button><button data-mode="must" class="' + (S.mode === "must" ? "on" : "") + '">시간 없을 때 — 꼭 할 것만</button></div>';
     if (pOn) h += '<div class="progbar"><span><b>진행중</b>인 할 일 ' + prog.length + "건만 보고 있습니다</span><button class=\"btn sm ghost\" data-mode=\"all\">전체 보기</button></div>";
@@ -429,13 +429,16 @@
     if (x.status === "done" || x.status === "cancel" || !x.steps || !x.steps.length) return null;
     var ck = x.checks || {}, n = 0;
     for (var i = 0; i < x.steps.length; i++) if (ck[i]) n++;
-    return n ? { n: n, of: x.steps.length } : null;
+    if (!n) return null;
+    /* 멈춤 = 사장님이 3일 넘게 손대지 않은 진행중 할 일(uu = 사장님이 마지막으로 체크·메모·주소를 바꾼 시각, 원장 261121-38). 일부러 미룬 일은 빼고 */
+    var idle = x.uu ? Math.floor((Date.now() - x.uu) / 864e5) : 0;
+    return { n: n, of: x.steps.length, stall: idle >= 3 && !(x.snoozeTo && x.snoozeTo > today()) ? idle : 0 };
   }
   function card(x) {
     var op = !!S.open[x.id], td = today(), done = x.status === "done", pg = progOf(x);
     var isNew = !done && (x.t0 || 0) > Date.now() - 864e5;
     var h = '<div class="card task' + (done ? " done" : "") + (pg ? " prog" : "") + '" id="c_' + esc(x.id) + '"><div class="head"><button class="chk" data-act="toggle" data-id="' + esc(x.id) + '" title="했어요">✓</button><div class="grow" data-act="expand" data-id="' + esc(x.id) + '">';
-    h += '<div class="t">' + (pg ? '<span class="badge prog">진행중 ' + pg.n + "/" + pg.of + "</span> " : "") + (isNew ? '<span class="badge new">새</span> ' : "") + (x.status === "cancel" ? '<span class="badge">취소됨</span> ' : "") + (pg ? '<span class="hl">' + mark(esc(x.title)) + "</span>" : mark(esc(x.title))) + "</div>";
+    h += '<div class="t">' + (pg ? '<span class="badge prog">진행중 ' + pg.n + "/" + pg.of + "</span> " + (pg.stall ? '<span class="badge stall" title="마지막으로 손대신 날 ' + md(ymd(new Date(x.uu))) + '">멈춤 ' + pg.stall + "일</span> " : "") : "") + (isNew ? '<span class="badge new">새</span> ' : "") + (x.status === "cancel" ? '<span class="badge">취소됨</span> ' : "") + (pg ? '<span class="hl">' + mark(esc(x.title)) + "</span>" : mark(esc(x.title))) + "</div>";
     h += '<div class="meta">' + catChip(x.cat) + (x.due ? '<span class="due' + (x.due < td && !done ? " late" : "") + '">' + (x.due < td && !done ? "기한 지남 " : "") + md(x.due) + (x.dueNote ? " " + esc(x.dueNote) : "") + "</span>" : "") +
       (x.mins ? "<span>약 " + x.mins + "분</span>" : "") + (x.biz ? "<span>" + esc(x.biz) + "</span>" : "") + (x.snoozeTo && x.snoozeTo > td ? "<span>" + md(x.snoozeTo) + "까지 미룸</span>" : "") +
       (x.answer ? '<span class="badge">답함</span>' : "") + (x.ideas && x.ideas.length ? '<span class="badge idea">💡 제안·아이디어 ' + x.ideas.length + "</span>" : "") + "</div>";

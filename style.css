@@ -80,6 +80,9 @@ h2 { font-size: 16px; margin: 0 0 8px; }
 .sum .prog-tile.has b .hl { background: linear-gradient(100deg, rgba(255, 238, 0, .35) 0, #fff23a 6px, #ffeb00 50%, #fff23a calc(100% - 6px), rgba(255, 238, 0, .35) 100%); }
 .sum .prog-tile.has span { color: #7a5a00; font-weight: 600; }
 .sum .prog-tile.on { border-color: var(--navy); box-shadow: inset 4px 0 0 #ffe600, 0 0 0 2px var(--navy); cursor: pointer; }
+/* 멈춤 N일 — 진행중인데 사장님이 3일 넘게 손대지 않은 일 */
+.badge.stall { background: #ffe3e3; color: #c92a2a; border: 1px solid #ffa8a8; vertical-align: 1px; }
+.sum .prog-tile .stallc { font-style: normal; font-weight: 800; color: #c92a2a; background: #ffe3e3; border-radius: 6px; padding: 0 5px; margin-left: 2px; white-space: nowrap; }
 .progbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 10px; padding: 8px 12px; border-radius: 12px; background: #fffbe0; border: 1px solid #f5d90a; font-size: 13.5px; }
 .progbar b { background: #ffeb00; padding: 0 3px; border-radius: 3px; }
 .grow { flex: 1; min-width: 0; cursor: pointer; }
