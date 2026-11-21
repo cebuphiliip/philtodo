@@ -18,7 +18,7 @@
   };
   var S = {
     items: LS.get("items", {}), dirty: LS.get("dirty", {}), since: LS.get("since", ""), view: LS.get("view", "todo"),
-    cat: LS.get("cat", "전체"), mode: LS.get("mode", "all"), open: LS.get("open", {}), drafts: LS.get("drafts", {}), msg: "", busy: false, local: false,
+    cat: LS.get("cat", "전체"), mode: LS.get("mode", "all") === "prog" ? "all" : LS.get("mode", "all"), open: LS.get("open", {}), drafts: LS.get("drafts", {}), msg: "", busy: false, local: false,
     dq: "", dmonth: "", karea: "전체", kq: "", kmonth: "", remote: { done: null, log: null }, rbusy: false,
     fq: "", fk: "전체", fprev: "todo", fr: null, fbusy: false
   };
@@ -398,26 +398,31 @@
     var doneToday = Object.keys(S.items).map(function (k) { return S.items[k]; }).filter(function (x) { return x.kind === "task" && x.status === "done" && (x.doneAt || "").slice(0, 10) === td; }).length;
     var nc = newChecks(), hc = nc.filter(function (x) { return x.lv === 1; }).length;
     var h = nc.length ? '<button type="button" class="ckstrip' + (hc ? " hot" : "") + '" data-view="check"><b>체크 ' + nc.length + "</b><span>" + (hc ? "급한 보고 " + hc + "건 — " : "") + "클실장이 꼭 알려 드릴 것이 있습니다</span><i>보기 →</i></button>" : "";
-    h += '<div class="sum"><div><b>' + all.length + '</b><span>남은 일 전체</span></div><div class="hot"><b>' + must.length + "</b><span>오늘 꼭" + (mins ? " · 약 " + mins + "분" : "") + '</span></div><div><b>' + dec + '</b><span>결정 기다리는 것</span></div><div><b>' + doneToday + '</b><span>오늘 끝낸 일</span></div><div class="idea-tile" data-view="idea"><b>💡 ' + freshIdeas().length + '</b><span>새 제안·아이디어 보기</span></div></div>';
+    /* 진행중 칸 — 누르면 진행중 할 일만, 다시 누르면 전체 (2026-11-21 사장님, 원장 261121-37) */
+    var prog = all.filter(progOf), pOn = S.mode === "prog";
+    var pTile = '<div class="prog-tile' + (prog.length ? " has" : "") + (pOn ? " on" : "") + '"' + (prog.length || pOn ? ' data-mode="' + (pOn ? "all" : "prog") + '" role="button" title="' + (pOn ? "전체 보기로 돌아가기" : "진행중인 할 일만 보기") + '"' : "") + '><b><span class="hl">' + prog.length + "</span></b><span>" + (pOn ? "진행중만 보는 중" : "진행중 보기") + "</span></div>";
+    h += '<div class="sum"><div><b>' + all.length + '</b><span>남은 일 전체</span></div>' + pTile + '<div class="hot"><b>' + must.length + "</b><span>오늘 꼭" + (mins ? " · 약 " + mins + "분" : "") + '</span></div><div><b>' + dec + '</b><span>결정 기다리는 것</span></div><div><b>' + doneToday + '</b><span>오늘 끝낸 일</span></div><div class="idea-tile" data-view="idea"><b>💡 ' + freshIdeas().length + '</b><span>새 제안·아이디어 보기</span></div></div>';
     h += '<div class="mode"><button data-mode="all" class="' + (S.mode === "all" ? "on" : "") + '">전체 보기</button><button data-mode="must" class="' + (S.mode === "must" ? "on" : "") + '">시간 없을 때 — 꼭 할 것만</button></div>';
-    var pool = S.mode === "must" ? must : all, counts = {};
+    if (pOn) h += '<div class="progbar"><span><b>진행중</b>인 할 일 ' + prog.length + "건만 보고 있습니다</span><button class=\"btn sm ghost\" data-mode=\"all\">전체 보기</button></div>";
+    var pool = S.mode === "must" ? must : pOn ? prog : all, counts = {};
     pool.forEach(function (x) { counts[x.cat] = (counts[x.cat] || 0) + 1; });
     h += '<div class="chips"><button class="chip' + (S.cat === "전체" ? " on" : "") + '" data-cat="전체">전체 ' + pool.length + "</button>" +
       CATS.filter(function (c) { return counts[c[0]]; }).map(function (c) { return '<button class="chip' + (S.cat === c[0] ? " on" : "") + '" data-cat="' + c[0] + '">' + c[1] + " " + counts[c[0]] + "</button>"; }).join("") + "</div>";
     var shown = pool.filter(function (x) { return S.cat === "전체" || x.cat === S.cat; });
-    if (!shown.length) h += '<div class="empty">' + (all.length ? "이 조건에 남은 일이 없습니다." : "남은 일이 없습니다. 수고하셨습니다.") + "</div>";
+    if (!shown.length) h += '<div class="empty">' + (pOn ? "진행중인 할 일이 없습니다. 할 일을 열어 순서를 하나라도 체크하면 여기에 모입니다." : all.length ? "이 조건에 남은 일이 없습니다." : "남은 일이 없습니다. 수고하셨습니다.") + "</div>";
     BUCKETS.forEach(function (b) {
       if (S.mode === "must" && b[0] !== "late" && b[0] !== "today") return;
       var xs = shown.filter(function (x) { return bucket(x) === b[0]; }).sort(sorter);
       if (!xs.length) return;
       h += '<div class="sec ' + b[0] + '"><h2>' + b[1] + '</h2><span class="cnt">' + xs.length + "건 · " + b[2] + "</span></div>";
-      if (b[0] === "snooze" || b[0] === "later") h += "<details" + (S.open["sec_" + b[0]] ? " open" : "") + ' data-sec="' + b[0] + '"><summary class="note">펼쳐 보기</summary>' + xs.map(card).join("") + "</details>";
+      if ((b[0] === "snooze" || b[0] === "later") && !pOn) h += "<details" + (S.open["sec_" + b[0]] ? " open" : "") + ' data-sec="' + b[0] + '"><summary class="note">펼쳐 보기</summary>' + xs.map(card).join("") + "</details>";
       else h += xs.map(card).join("");
     });
     if (S.mode === "must" && all.length > must.length) h += '<p class="note" style="text-align:center;margin-top:14px">나머지 ' + (all.length - must.length) + '건은 미뤄 두셔도 됩니다. <button class="btn sm ghost" data-mode="all">전체 보기</button></p>';
     return h;
   }
-  function sorter(a, b) { return (a.due || "9999").localeCompare(b.due || "9999") || (a.pri || 3) - (b.pri || 3) || (a.order || 0) - (b.order || 0) || (a.t0 || 0) - (b.t0 || 0); }
+  /* 같은 묶음(기한 지남·오늘 꼭·이번 주…) 안에서는 진행중 할 일이 맨 위 (원장 261121-37) */
+  function sorter(a, b) { return (progOf(b) ? 1 : 0) - (progOf(a) ? 1 : 0) || (a.due || "9999").localeCompare(b.due || "9999") || (a.pri || 3) - (b.pri || 3) || (a.order || 0) - (b.order || 0) || (a.t0 || 0) - (b.t0 || 0); }
 
   /* 진행중 = 사장님이 순서 체크를 하나라도 한, 아직 안 끝난 할 일 (2026-11-21 사장님, 원장 261121-32) — 제목을 형광펜으로 칠한 것처럼 */
   function progOf(x) {
