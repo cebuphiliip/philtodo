@@ -419,11 +419,18 @@
   }
   function sorter(a, b) { return (a.due || "9999").localeCompare(b.due || "9999") || (a.pri || 3) - (b.pri || 3) || (a.order || 0) - (b.order || 0) || (a.t0 || 0) - (b.t0 || 0); }
 
+  /* 진행중 = 사장님이 순서 체크를 하나라도 한, 아직 안 끝난 할 일 (2026-11-21 사장님, 원장 261121-32) — 제목을 형광펜으로 칠한 것처럼 */
+  function progOf(x) {
+    if (x.status === "done" || x.status === "cancel" || !x.steps || !x.steps.length) return null;
+    var ck = x.checks || {}, n = 0;
+    for (var i = 0; i < x.steps.length; i++) if (ck[i]) n++;
+    return n ? { n: n, of: x.steps.length } : null;
+  }
   function card(x) {
-    var op = !!S.open[x.id], td = today(), done = x.status === "done";
+    var op = !!S.open[x.id], td = today(), done = x.status === "done", pg = progOf(x);
     var isNew = !done && (x.t0 || 0) > Date.now() - 864e5;
-    var h = '<div class="card task' + (done ? " done" : "") + '" id="c_' + esc(x.id) + '"><div class="head"><button class="chk" data-act="toggle" data-id="' + esc(x.id) + '" title="했어요">✓</button><div class="grow" data-act="expand" data-id="' + esc(x.id) + '">';
-    h += '<div class="t">' + (isNew ? '<span class="badge new">새</span> ' : "") + (x.status === "cancel" ? '<span class="badge">취소됨</span> ' : "") + mark(esc(x.title)) + "</div>";
+    var h = '<div class="card task' + (done ? " done" : "") + (pg ? " prog" : "") + '" id="c_' + esc(x.id) + '"><div class="head"><button class="chk" data-act="toggle" data-id="' + esc(x.id) + '" title="했어요">✓</button><div class="grow" data-act="expand" data-id="' + esc(x.id) + '">';
+    h += '<div class="t">' + (pg ? '<span class="badge prog">진행중 ' + pg.n + "/" + pg.of + "</span> " : "") + (isNew ? '<span class="badge new">새</span> ' : "") + (x.status === "cancel" ? '<span class="badge">취소됨</span> ' : "") + (pg ? '<span class="hl">' + mark(esc(x.title)) + "</span>" : mark(esc(x.title))) + "</div>";
     h += '<div class="meta">' + catChip(x.cat) + (x.due ? '<span class="due' + (x.due < td && !done ? " late" : "") + '">' + (x.due < td && !done ? "기한 지남 " : "") + md(x.due) + (x.dueNote ? " " + esc(x.dueNote) : "") + "</span>" : "") +
       (x.mins ? "<span>약 " + x.mins + "분</span>" : "") + (x.biz ? "<span>" + esc(x.biz) + "</span>" : "") + (x.snoozeTo && x.snoozeTo > td ? "<span>" + md(x.snoozeTo) + "까지 미룸</span>" : "") +
       (x.answer ? '<span class="badge">답함</span>' : "") + (x.ideas && x.ideas.length ? '<span class="badge idea">💡 제안·아이디어 ' + x.ideas.length + "</span>" : "") + "</div>";

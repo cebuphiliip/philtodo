@@ -65,6 +65,15 @@ h2 { font-size: 16px; margin: 0 0 8px; }
 .chk:hover { border-color: var(--ok); color: #9fd6bf; }
 .task.done .chk { background: var(--ok); border-color: var(--ok); color: #fff; }
 .task.done .t { text-decoration: line-through; color: var(--mute); }
+/* 진행중(순서 체크를 하나라도 한 할 일) — 제목 전체를 형광펜으로 쭉 칠한 것처럼, 카드 왼쪽에 형광 띠 */
+.task.prog { border-color: #f5d90a; box-shadow: inset 5px 0 0 #ffe600, 0 1px 6px rgba(240, 200, 0, .25); }
+.task.prog .t .hl {
+  padding: 1px 4px; margin: 0 -2px;
+  background: linear-gradient(100deg, rgba(255, 238, 0, .35) 0, #fff23a 6px, #ffeb00 50%, #fff23a calc(100% - 6px), rgba(255, 238, 0, .35) 100%);
+  border-radius: 3px 8px 4px 10px;
+  -webkit-box-decoration-break: clone; box-decoration-break: clone;
+}
+.badge.prog { background: #ff6b00; color: #fff; letter-spacing: .2px; vertical-align: 1px; }
 .grow { flex: 1; min-width: 0; cursor: pointer; }
 .t { font-weight: 700; font-size: 15.5px; word-break: keep-all; overflow-wrap: anywhere; }
 .meta { font-size: 12.5px; color: var(--mute); margin-top: 2px; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
