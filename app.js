@@ -379,7 +379,10 @@
     var v = S.view;
     document.querySelectorAll(".top nav button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-view") === v); });
     var nt = $("#navTodo"); if (nt) nt.textContent = list().length;
-    var h = v === "find" ? viewFind() : v === "check" ? viewCheck() : v === "done" ? viewDone() : v === "kl" ? viewKl() : v === "set" ? viewSet() : v === "idea" ? viewIdeas() : viewTodo();
+    var h;
+    /* 화면 하나가 오류로 멈추면 앱 전체가 그대로 굳어 '검색이 안 된다'로 보인다 — 오류를 화면에 알리고 나머지는 계속 (원장 261121-50) */
+    try { h = v === "find" ? viewFind() : v === "check" ? viewCheck() : v === "done" ? viewDone() : v === "kl" ? viewKl() : v === "set" ? viewSet() : v === "idea" ? viewIdeas() : viewTodo(); }
+    catch (e) { if (window.console) console.error(e); h = '<div class="card"><h2>화면을 그리다 문제가 생겼습니다</h2><p class="note">' + esc(e && e.message || e) + '</p><p class="note">맨 위 메뉴로 다른 화면에 갔다가 다시 와 보시고, 계속되면 이 문장을 클실장에게 알려 주세요.</p></div>'; }
     var ni = $("#navIdea"); if (ni) { var fi = sess ? freshIdeas().length : 0; ni.textContent = fi; ni.style.display = fi ? "" : "none"; }
     chkBtn();
     $("#app").innerHTML = h;
@@ -615,7 +618,8 @@
     if (!sess) return needLogin();
     var loc = Object.keys(S.items).map(function (k) { return S.items[k]; }).filter(function (x) { return x.kind === "task" && x.status === "done"; });
     var src = S.remote.done || loc, seen = {}, rows = [];
-    src.concat(loc).forEach(function (x) { if (seen[x.id]) return; seen[x.id] = 1; if (S.dmonth && (x.doneAt || "").slice(0, 7) !== S.dmonth) return; if (S.dq && (x.title || "").toLowerCase().indexOf(S.dq.toLowerCase()) < 0) return; rows.push(x); });
+    /* 서버에서 가져온 옛 복사본보다 이 기기의 지금 상태가 먼저 — 되돌린 일이 '한 일'에 남아 다시 누르면 도로 완료되던 문제(2026-11-21 사장님, 원장 261121-50) */
+    src.concat(loc).forEach(function (x) { if (seen[x.id]) return; seen[x.id] = 1; var live = S.items[x.id]; if (live) x = live; if (x.status !== "done") return; if (S.dmonth && (x.doneAt || "").slice(0, 7) !== S.dmonth) return; if (S.dq && (x.title || "").toLowerCase().indexOf(S.dq.toLowerCase()) < 0) return; rows.push(x); });
     rows.sort(function (a, b) { return (b.doneAt || "").localeCompare(a.doneAt || ""); });
     var ms = months(src.concat(loc), "doneAt"); if (ms.indexOf(ymd().slice(0, 7)) < 0) ms.unshift(ymd().slice(0, 7));
     var h = '<h1>사장님이 한 일</h1><div class="card"><div class="grid2"><input class="search" id="dq" placeholder="제목으로 찾기" value="' + esc(S.dq) + '"><select id="dmonth"><option value="">모든 달</option>' + ms.map(function (m) { return '<option value="' + m + '"' + (S.dmonth === m ? " selected" : "") + ">" + m.replace("-", "년 ") + "월</option>"; }).join("") + '</select></div><p class="note" style="margin:6px 0 0">이 기기에는 최근 ' + KEEP_DAYS + '일만 둡니다. 그보다 오래된 일은 <button class="btn sm ghost" data-act="rsearch" data-k="done">서버에서 찾기</button>' + (S.rbusy ? " 찾는 중…" : "") + "</p></div>";
@@ -624,7 +628,7 @@
     h += '<div class="card list">' + rows.map(function (x) {
       var d = (x.doneAt || "").slice(0, 10), u = x.urls || {}, links = Object.keys(u).filter(function (k) { return u[k]; }).map(function (k) { return '<a href="' + esc(u[k]) + '" target="_blank" rel="noopener">' + esc(((x.fields || []).filter(function (f) { return f.key === k; })[0] || { label: k }).label) + "</a>"; });
       var r = '<div class="row1"><div class="d">' + (d !== last ? md(d) : "") + '</div><div class="grow"><span class="area">' + esc((CAT[x.cat] || CAT["기타"]).label) + "</span>" + esc(x.title) + (links.length ? '<div class="note">' + links.join(" · ") + "</div>" : "") + (x.answer ? '<div class="note">답: ' + esc([x.answer.pick, x.answer.text].filter(Boolean).join(" / ")) + "</div>" : "") +
-        '</div><button class="btn sm ghost" data-act="toggle" data-id="' + esc(x.id) + '">되돌리기</button></div>';
+        '</div><button class="btn sm ghost" data-act="undo" data-id="' + esc(x.id) + '">되돌리기</button></div>';
       last = d; return r;
     }).join("") + "</div>";
     return h;
@@ -684,6 +688,28 @@
     return h;
   }
 
+  /* ---------- 되돌리기·할 일로 가기 (2026-11-21 사장님: "되돌리기 하고 할 일로 가 보니 없어", 원장 261121-50) ---------- */
+  function restoreTask(id) {
+    var x = S.items[id]; if (!x) return;
+    setUser(id, { status: "todo", doneAt: null, doneBy: null }, true);
+    // 서버에서 가져온 옛 복사본도 같이 바꿔 '한 일'·찾기 화면에 완료로 남지 않게
+    [S.remote.done, S.fr && S.fr.rows].forEach(function (arr) { (arr || []).forEach(function (r) { if (r && r.id === id) { r.status = "todo"; delete r.doneAt; delete r.doneBy; } }); });
+    // '꼭 할 것만'·'진행중만'·분류 칸이 걸려 있으면 되돌린 일이 가려지므로 풀어 둔다
+    if (S.mode !== "all" || (S.cat !== "전체" && S.cat !== x.cat)) { S.mode = "all"; S.cat = "전체"; LS.set("mode", S.mode); LS.set("cat", S.cat); }
+    var b = BUCKETS.filter(function (k) { return k[0] === bucket(x); })[0];
+    render();
+    toast("다시 할 일로 돌렸습니다 — 할 일의 '" + (b ? b[1] : "할 일") + "' 칸에 있습니다", { label: "할 일에서 보기", fn: function () { goTask(id); } });
+  }
+  function goTask(id) {
+    var x = S.items[id];
+    clearFind(); S.view = "todo"; S.cat = "전체"; S.mode = "all"; LS.set("view", "todo"); LS.set("cat", S.cat); LS.set("mode", S.mode); S.open[id] = true;
+    if (x && x.snoozeTo) S.open["sec_snooze"] = true;
+    if (x && x.due && bucket(x) === "later") S.open["sec_later"] = true;
+    render(); window.scrollTo(0, 0);
+    var el = document.getElementById("c_" + id);
+    if (el) { el.scrollIntoView({ block: "start" }); el.classList.add("flash"); setTimeout(function () { el.classList.remove("flash"); }, 2400); }
+  }
+
   /* ---------- 알림 ---------- */
   var tt = 0;
   function toast(m, act) {
@@ -706,10 +732,16 @@
     if (a === "saveall") { saveAll(); return; }
     if (id && !x) { [S.remote.done, S.remote.log, S.fr && S.fr.rows].forEach(function (arr) { (arr || []).forEach(function (r) { if (r.id === id) x = S.items[id] = r; }); }); }
     if (a === "expand") { S.open[id] = !S.open[id]; LS.set("open", S.open); render(); return; }
-    if (a === "goto") { ev.preventDefault(); clearFind(); S.view = "todo"; S.cat = "전체"; S.mode = "all"; S.open[id] = true; if (x && x.snoozeTo) S.open["sec_snooze"] = true; if (x && x.due && bucket(x) === "later") S.open["sec_later"] = true; render(); var el = document.getElementById("c_" + id); if (el) el.scrollIntoView({ block: "start" }); return; }
+    if (a === "goto") { ev.preventDefault(); goTask(id); return; }
+    /* '한 일'의 되돌리기는 되돌리기만 한다(누를 때마다 완료↔할 일이 바뀌지 않게) — 되돌린 뒤 그 할 일이 어디 있는지 바로 보여 준다 (원장 261121-50) */
+    if (a === "undo" && x) {
+      if (x.status === "done") restoreTask(id);
+      else toast("이미 할 일에 있습니다", { label: "할 일에서 보기", fn: function () { goTask(id); } });
+      return;
+    }
     if (a === "toggle" && x) {
-      if (x.status === "done") { setUser(id, { status: "todo", doneAt: null, doneBy: null }); toast("다시 할 일로 돌렸습니다"); }
-      else { var miss = (x.fields || []).filter(function (f) { return f.need && !((x.urls || {})[f.key]); }); setUser(id, { status: "done", doneAt: nowIso(), doneBy: "사장님" }); toast(miss.length ? "완료! 올린 주소도 넣어 주시면 클실장이 링크를 채웁니다" : "완료했습니다", { label: "되돌리기", fn: function () { setUser(id, { status: "todo", doneAt: null, doneBy: null }); } }); }
+      if (x.status === "done") restoreTask(id);
+      else { var miss = (x.fields || []).filter(function (f) { return f.need && !((x.urls || {})[f.key]); }); setUser(id, { status: "done", doneAt: nowIso(), doneBy: "사장님" }); toast(miss.length ? "완료! 올린 주소도 넣어 주시면 클실장이 링크를 채웁니다" : "완료했습니다", { label: "되돌리기", fn: function () { restoreTask(id); } }); }
       return;
     }
     if (a === "snooze" && x) { var n = +t.getAttribute("data-n"); setUser(id, { snoozeTo: addDays(today(), n) }); S.open[id] = false; toast(md(addDays(today(), n)) + "로 미뤘습니다", { label: "되돌리기", fn: function () { setUser(id, { snoozeTo: null }); } }); return; }
@@ -759,16 +791,18 @@
   document.addEventListener("toggle", function (ev) { var s = ev.target.getAttribute && ev.target.getAttribute("data-sec"); if (s) S.open["sec_" + s] = ev.target.open; var s2 = ev.target.getAttribute && ev.target.getAttribute("data-isec"); if (s2) S.open["isec_" + s2] = ev.target.open; if (s || s2) LS.set("open", S.open); }, true);
   var st = 0;
   var frt = 0;
+  /* 찾기 칸 글자 → 찾기 화면. 글자를 칠 때(input)·한글 조합이 끝날 때(compositionend)·Enter 때 모두 같은 길로 (원장 261121-50) */
+  function fqSet(v) {
+    S.fq = v; S.fk = S.fk || "전체";
+    if (S.fq.trim()) { if (S.view !== "find") { S.fprev = S.view; S.view = "find"; S.fk = "전체"; window.scrollTo(0, 0); } }
+    else if (S.view === "find") { S.view = S.fprev || "todo"; }
+    clearTimeout(frt); frt = setTimeout(render, 120);
+    clearTimeout(ftm); if (terms(S.fq).join("").length >= 2) ftm = setTimeout(findRemote, 550);
+  }
+  document.addEventListener("compositionend", function (ev) { if (ev.target && ev.target.id === "fq") fqSet(ev.target.value); });
   document.addEventListener("input", function (ev) {
     var t = ev.target;
-    if (t.id === "fq") {  // 머리글 찾기 칸 — 머리글은 다시 그리지 않으니 글자를 치는 중에도 칸이 그대로다
-      S.fq = t.value; S.fk = S.fk || "전체";
-      if (S.fq.trim()) { if (S.view !== "find") { S.fprev = S.view; S.view = "find"; S.fk = "전체"; window.scrollTo(0, 0); } }
-      else if (S.view === "find") { S.view = S.fprev || "todo"; }
-      clearTimeout(frt); frt = setTimeout(render, 120);
-      clearTimeout(ftm); if (terms(S.fq).join("").length >= 2) ftm = setTimeout(findRemote, 550);
-      return;
-    }
+    if (t.id === "fq") { fqSet(t.value); return; }  // 머리글 찾기 칸 — 머리글은 다시 그리지 않으니 글자를 치는 중에도 칸이 그대로다
     var da = t.getAttribute && t.getAttribute("data-act");
     if (da === "url" || da === "note" || da === "ans") {  // 치는 동안 이 기기에 바로 남긴다 — 갑자기 닫혀도 다시 열면 그대로
       S.drafts[dk(da, t.getAttribute("data-id"), da === "url" ? t.getAttribute("data-k") : "")] = t.value; LS.set("drafts", S.drafts); markSave(); return;
@@ -780,7 +814,8 @@
   document.addEventListener("keydown", function (ev) {
     var tg = ev.target, typing = /^(INPUT|TEXTAREA|SELECT)$/.test(tg.tagName || "") || tg.isContentEditable;
     if (tg.id === "fq") {
-      if (ev.key === "Enter") { ev.preventDefault(); findRemote(); if (S.fq.trim()) tg.blur(); }
+      /* 한글 입력 중(조합 중) Enter 는 글자를 확정하는 키 — 이때 칸을 빠져나가면 마지막 글자가 안 들어가 찾기가 안 됐다 (원장 261121-50) */
+      if (ev.key === "Enter" && !ev.isComposing && ev.keyCode !== 229) { ev.preventDefault(); fqSet(tg.value); findRemote(); }
       if (ev.key === "Escape") { var back = S.view === "find" ? (S.fprev || "todo") : S.view; clearFind(); S.view = back; render(); tg.blur(); }
       return;
     }

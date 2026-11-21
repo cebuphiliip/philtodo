@@ -1,6 +1,8 @@
 :root {
   --navy: #14213D; --navy2: #24345c; --cream: #FAF6EE; --card: #ffffff; --line: #e7e1d4; --ink: #1d2433; --mute: #6b7280;
   --gold: #e0a32e; --ok: #0a8a5a; --warn: #c2410c; --red: #d42a2a; --chip: #f1ece1;
+  /* 폰 브라우저의 '어두운 화면 강제'가 글자색을 뒤집어 흰 칸에 흰 글자가 되지 않게 — 필투두는 밝은 화면 하나만 (원장 261121-50) */
+  color-scheme: only light;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--cream); color: var(--ink); font: 15px/1.55 "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif; -webkit-text-size-adjust: 100%; }
@@ -180,12 +182,13 @@ a.from { color: #1c5fd1; }
 @media (max-width: 560px) { .top nav { gap: 2px; } .top nav button { flex: 1 1 auto; white-space: nowrap; font-size: 12px; padding: 6px 5px; } }
 
 /* 🔍 전체 찾기 — 머리글에 늘 떠 있는 칸 */
-.hs { order: 1; flex: 1 1 200px; min-width: 0; max-width: 340px; display: flex; align-items: center; gap: 6px; background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.3); border-radius: 999px; padding: 0 12px; cursor: text; }
-.hs input { flex: 1; min-width: 0; background: transparent; border: 0; outline: 0; color: #fff; padding: 7px 0; font-size: 14px; }
-.hs input::placeholder { color: rgba(255,255,255,.75); }
-.hs:focus-within { background: #fff; border-color: #fff; }
-.hs:focus-within input { color: var(--ink); }
-.hs:focus-within input::placeholder { color: var(--mute); }
+/* 찾기 칸은 늘 흰 바탕 + 진한 글자 (2026-11-21 사장님: "글자를 치면 흰색이라 안 보여", 원장 261121-50).
+   예전엔 평소 흰 글자 → 누르면 진한 글자로 바뀌었는데, 기기·브라우저에 따라 바뀌지 않아 흰 칸에 흰 글자가 됐다 */
+.hs { order: 1; flex: 1 1 200px; min-width: 0; max-width: 340px; display: flex; align-items: center; gap: 6px; background: #fff; border: 1px solid #fff; border-radius: 999px; padding: 0 12px; cursor: text; color: var(--ink); }
+.hs input, .hs input:focus { flex: 1; min-width: 0; background: transparent; border: 0; outline: 0; color: var(--ink); -webkit-text-fill-color: var(--ink); caret-color: var(--navy); padding: 7px 0; font-size: 14px; }
+.hs input::placeholder { color: var(--mute); -webkit-text-fill-color: var(--mute); opacity: 1; }
+.hs:focus-within { box-shadow: 0 0 0 3px rgba(224,163,46,.55); }
+.task.flash { box-shadow: 0 0 0 3px var(--gold); transition: box-shadow .3s; }
 .top nav { order: 2; }
 /* 💾 저장 — 찾기 칸 바로 옆(원장 261119-110). 서버에 안 올라간 입력이 있으면 금색 */
 .savebtn { order: 1; flex: 0 0 auto; background: rgba(255,255,255,.12); color: #fff; border: 1px solid rgba(255,255,255,.35); border-radius: 999px; padding: 7px 14px; font-size: 14px; font-weight: 700; cursor: pointer; white-space: nowrap; }
