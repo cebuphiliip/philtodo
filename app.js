@@ -768,7 +768,7 @@
     if (a === "img") { copyImage(t.getAttribute("data-p")); return; }
     if (a === "folder") { openFolder(t.getAttribute("data-p")); return; }
     if (a === "zoom") { var z = document.createElement("div"); z.className = "zoom"; z.innerHTML = '<img src="' + esc(t.getAttribute("data-src")) + '">'; z.onclick = function () { z.remove(); }; document.body.appendChild(z); return; }
-    if (a === "pick" && x) { var o = x.choice.opts[+t.getAttribute("data-i")], an = Object.assign({}, x.answer || {}); an.pick = an.pick === o ? null : o; an.at = nowIso(); var fin = !!(an.pick || an.text); setUser(id, { answer: an, status: fin ? "done" : "todo", doneAt: fin ? nowIso() : null, doneBy: fin ? "사장님" : null }); S.open[id] = true; render(); if (fin) toast("결정을 보냈습니다 — 클실장이 반영합니다"); return; }
+    if (a === "pick" && x) { var o = x.choice.opts[+t.getAttribute("data-i")], an = Object.assign({}, x.answer || {}); an.pick = an.pick === o ? null : o; an.at = nowIso(); setUser(id, { answer: an }); S.open[id] = true; render(); toast(an.pick ? "답을 저장했습니다 — 할 일을 다 마치면 맨 아래 [✓ 했어요]를 눌러 주세요" : "고른 답을 지웠습니다"); return; }   // 11-22 사장님(원장 261122-45): 결정·답은 저장만 — '한 일'로는 [✓ 했어요]로만 넘어간다
     if (a === "rsearch") { remoteSearch(t.getAttribute("data-k")); return; }
     if (a === "sync") { doSync(); return; }
     if (a === "logout") { setSess(null); S.items = {}; S.dirty = {}; S.since = ""; save(); render(); return; }
@@ -788,7 +788,7 @@
     if (a === "step") { var ck = Object.assign({}, x.checks || {}); ck[t.getAttribute("data-i")] = t.checked; setUser(id, { checks: ck }); return; }
     if (a === "url") { var u = Object.assign({}, x.urls || {}); u[t.getAttribute("data-k")] = t.value.trim(); setUser(id, { urls: u }); toast("주소를 저장했습니다"); return; }
     if (a === "note") { setUser(id, { note: t.value }, true); toast("메모를 저장했습니다"); return; }
-    if (a === "ans") { var an = Object.assign({}, x.answer || {}); an.text = t.value.trim(); an.at = nowIso(); var fin = !!(an.pick || an.text); setUser(id, { answer: an, status: fin ? "done" : "todo", doneAt: fin ? nowIso() : null, doneBy: fin ? "사장님" : null }); toast("답을 보냈습니다"); return; }
+    if (a === "ans") { var an = Object.assign({}, x.answer || {}); an.text = t.value.trim(); an.at = nowIso(); setUser(id, { answer: an }); toast("답을 저장했습니다 — 할 일을 다 마치면 맨 아래 [✓ 했어요]를 눌러 주세요"); return; }   // 11-22 저장만(원장 261122-45)
   });
   document.addEventListener("toggle", function (ev) { var s = ev.target.getAttribute && ev.target.getAttribute("data-sec"); if (s) S.open["sec_" + s] = ev.target.open; var s2 = ev.target.getAttribute && ev.target.getAttribute("data-isec"); if (s2) S.open["isec_" + s2] = ev.target.open; if (s || s2) LS.set("open", S.open); }, true);
   var st = 0;
