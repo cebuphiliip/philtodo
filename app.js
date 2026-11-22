@@ -743,7 +743,7 @@
     }
     if (a === "toggle" && x) {
       if (x.status === "done") restoreTask(id);
-      else { var miss = (x.fields || []).filter(function (f) { return f.need && !((x.urls || {})[f.key]); }); setUser(id, { status: "done", doneAt: nowIso(), doneBy: "사장님" }); toast(miss.length ? "완료! 올린 주소도 넣어 주시면 클실장이 링크를 채웁니다" : "완료했습니다", { label: "되돌리기", fn: function () { restoreTask(id); } }); }
+      else { var miss = (x.fields || []).filter(function (f) { return f.need && !((x.urls || {})[f.key]); }); S.open[id] = false; if (S.view === "find") { clearFind(); S.view = "todo"; LS.set("view", "todo"); } setUser(id, { status: "done", doneAt: nowIso(), doneBy: "사장님" }); window.scrollTo(0, 0); LS.set("scroll", 0); toast(miss.length ? "완료! 올린 주소도 넣어 주시면 클실장이 링크를 채웁니다" : "완료했습니다", { label: "되돌리기", fn: function () { restoreTask(id); } }); }
       return;
     }
     if (a === "snooze" && x) { var n = +t.getAttribute("data-n"); setUser(id, { snoozeTo: addDays(today(), n) }); S.open[id] = false; toast(md(addDays(today(), n)) + "로 미뤘습니다", { label: "되돌리기", fn: function () { setUser(id, { snoozeTo: null }); } }); return; }
