@@ -801,7 +801,11 @@
     clearTimeout(frt); frt = setTimeout(render, 120);
     clearTimeout(ftm); if (terms(S.fq).join("").length >= 2) ftm = setTimeout(findRemote, 550);
   }
-  document.addEventListener("compositionend", function (ev) { if (ev.target && ev.target.id === "fq") fqSet(ev.target.value); });
+  document.addEventListener("compositionend", function (ev) {
+    var t = ev.target; if (!t) return;
+    if (t.id === "fq") return fqSet(t.value);
+    if (t.id === "dq" || t.id === "kq") { S[t.id] = t.value; clearTimeout(st); st = setTimeout(function () { var pos = t.selectionStart; render(); var n = $("#" + t.id); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (e) { } } }, 350); }
+  });
   document.addEventListener("input", function (ev) {
     var t = ev.target;
     if (t.id === "fq") { fqSet(t.value); return; }  // 머리글 찾기 칸 — 머리글은 다시 그리지 않으니 글자를 치는 중에도 칸이 그대로다
@@ -811,6 +815,7 @@
     }
     if (t.id !== "dq" && t.id !== "kq") return;
     S[t.id] = t.value; clearTimeout(st);
+    if (ev.isComposing || ev.inputType === "insertCompositionText") return;  // 한글 조합 중에는 다시 그리지 않는다(자모가 낱자로 떨어짐) — 조합이 끝나면 compositionend 가 다시 그린다
     st = setTimeout(function () { var pos = t.selectionStart; render(); var n = $("#" + t.id); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (e) { } } }, 350);
   });
   document.addEventListener("keydown", function (ev) {
