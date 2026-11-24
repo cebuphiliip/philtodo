@@ -4,7 +4,6 @@
 (function () {
   "use strict";
   var CFG = window.PT_CONFIG || {}, SB = !!(CFG.url && CFG.key && window.fetch);
-  var USER_KEYS = ["status", "note", "doneAt", "doneBy", "snoozeTo", "answer", "urls", "checks", "react", "uu"];
   var CATS = [["올리기", "콘텐츠 올리기", "#e8590c"], ["수정", "올린 글 고치기", "#1c7ed6"], ["판단", "결정해 주실 것", "#7048e8"],
     ["설정", "카페·사이트 설정", "#0ca678"], ["연락", "업체 연락·확인", "#d6336c"], ["확인", "확인·점검", "#5c677d"], ["기타", "기타", "#868e96"]];
   var CAT = {}; CATS.forEach(function (c) { CAT[c[0]] = { label: c[1], color: c[2] }; });
@@ -14,7 +13,8 @@
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
   var LS = {
     get: function (k, d) { try { var v = localStorage.getItem("pt_" + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
-    set: function (k, v) { try { localStorage.setItem("pt_" + k, JSON.stringify(v)); } catch (e) { } }
+    set: function (k, v) { try { localStorage.setItem("pt_" + k, JSON.stringify(v)); return true; } catch (e) { return false; } },   // 저장 공간이 차면 false(PT-07)
+    full: false, lost: false
   };
   var S = {
     items: LS.get("items", {}), dirty: LS.get("dirty", {}), since: LS.get("since", ""), view: LS.get("view", "todo"),
@@ -23,17 +23,47 @@
     fq: "", fk: "전체", fprev: "todo", fr: null, fbusy: false
   };
   var sess = LS.get("sess", null);
-  function save() { LS.set("items", S.items); LS.set("dirty", S.dirty); LS.set("since", S.since); }
+  /* 이 기기 저장(2026-11-24 고침 PT-04·07): 아직 서버에 안 올라간 할 일(dirty)은 큰 목록과 따로 'pend'(계정별)에도 남긴다 —
+     저장 공간이 차서 큰 목록을 못 써도, 로그아웃해도, 같은 계정으로 다시 열면 그대로 올라간다. */
+  function uidNow() { return sess && sess.user ? sess.user.id : ""; }
+  function pendAll() { var P = LS.get("pend", {}); return isObj(P) ? P : {}; }
+  function freeSpace() {   // 서버에 이미 있는 지난 기록(클실장 한 일·끝난 일)부터 이 기기에서 비운다 — 서버는 그대로
+    var cut = addDays(today(), -14);
+    Object.keys(S.items).forEach(function (id) {
+      var x = S.items[id]; if (S.dirty[id]) return;
+      if (x.kind === "log" || ((x.status === "done" || x.status === "cancel") && (x.doneAt || "").slice(0, 10) < cut)) delete S.items[id];
+    });
+  }
+  function save() {
+    var uid = uidNow(), P = pendAll(), mine = {};
+    Object.keys(S.dirty).forEach(function (id) { if (S.items[id]) mine[id] = S.items[id]; });
+    if (uid) { if (Object.keys(mine).length) P[uid] = mine; else delete P[uid]; }
+    var small = function () { return LS.set("pend", P) && LS.set("dirty", S.dirty); };
+    var ok = small() && LS.set("since", S.since) && LS.set("items", S.items), cut = false;
+    if (!ok) { freeSpace(); ok = small() && LS.set("since", S.since) && LS.set("items", S.items); }
+    if (!ok) { try { localStorage.removeItem("pt_items"); } catch (e) { } ok = small() && LS.set("since", ""); cut = true; }   // 큰 목록은 다음에 서버에서 다시 받는다
+    var was = LS.lost; LS.lost = !ok; LS.full = cut || !ok;
+    if (LS.lost && !was) { toast(FULL_MSG); if (SB && sess) syncSoon(); }
+    return ok;
+  }
+  var FULL_MSG = "⚠ 이 기기 저장 공간이 꽉 차 방금 고친 것을 이 기기에 남기지 못했습니다. 인터넷이 되면 바로 서버에 올립니다 — 이 화면을 닫지 말고 맨 위 [💾 저장]을 눌러 주세요.";
+  function savedToast(m) { toast(LS.lost ? FULL_MSG : m + (LS.full ? " (이 기기 저장 공간이 거의 차서 지난 기록 일부는 서버에만 둡니다)" : "")); }
+  function restorePend() {   // 지난번에 못 올린 것(저장 공간 부족·로그아웃)을 되살려 다시 올린다
+    var uid = uidNow(), P = pendAll(), mine = uid && isObj(P[uid]) ? P[uid] : null;
+    if (!mine) return 0;
+    Object.keys(mine).forEach(function (id) { S.items[id] = merge(mine[id], S.items[id]); S.dirty[id] = 1; });
+    return Object.keys(mine).length;
+  }
   /* ---------- 💾 저장(2026-11-19 사장님, 원장 261119-110): 하다 만 입력·펼친 카드·보던 자리를 그대로 남겨 언제 다시 열어도 이어서 ---------- */
   function dk(act, id, k) { return act + "|" + id + "|" + (k || ""); }
   function draftOf(act, id, k, saved) { var v = S.drafts[dk(act, id, k)]; return v != null ? v : saved; }
   function saveUi() { LS.set("open", S.open); LS.set("cat", S.cat); LS.set("view", S.view === "find" ? (S.fprev || "todo") : S.view); LS.set("mode", S.mode); LS.set("scroll", window.scrollY || 0); LS.set("drafts", S.drafts); }
   function markSave() {
     var b = document.getElementById("saveBtn"); if (!b) return;
-    var n = Object.keys(S.drafts).length;
+    var n = Object.keys(S.drafts).length + Object.keys(S.dirty).length;   // 치는 중인 글 + 아직 서버에 안 올라간 할 일(PT-18)
     b.classList.toggle("dirty", n > 0);
     b.textContent = n ? "💾 저장 (" + n + ")" : "💾 저장";
-    b.title = n ? "아직 서버에 안 올라간 입력 " + n + "개 — 누르면 저장" : "지금 화면(체크·입력·펼친 카드·보던 자리) 저장";
+    b.title = n ? "아직 서버에 안 올라간 것 " + n + "개 — 누르면 저장" : "지금 화면(체크·입력·펼친 카드·보던 자리) 저장";
   }
   function saveAll() {
     var n = 0;
@@ -74,21 +104,153 @@
   var BUCKETS = [["late", "늦은 일", "기한이 지났습니다"], ["today", "오늘 꼭", "시간이 없어도 이것만은"], ["week", "이번 주", "날짜가 다가오는 일"],
     ["free", "여유 있을 때", "시간 날 때 하나씩"], ["later", "예정", "날짜가 되면 위로 올라옵니다"], ["snooze", "미룬 일", "미룬 날짜가 되면 다시 올라옵니다"]];
 
-  /* ---------- 합치기(동기화) ---------- */
-  function merge(l, r) {
-    if (!l) return r; if (!r) return l;
-    var base = (r.u || 0) >= (l.u || 0) ? r : l, us = (l.uu || 0) >= (r.uu || 0) ? l : r, o = {};
-    Object.keys(base).forEach(function (k) { o[k] = base[k]; });
-    USER_KEYS.forEach(function (k) { if (us[k] === undefined) delete o[k]; else o[k] = us[k]; });
-    o.u = Math.max(l.u || 0, r.u || 0);
+  /* ==== MERGE BEGIN — 합치기(동기화). 2026-11-24 고침(전수조사 PT-01~06·28, 원장 261124-42 — 사장님: "필투두에 있는 내 할일들이 지워지거나 그러면 절대 안되고")
+     할 일 하나 = 클실장 몫(제목·순서·설명…, 시각 u) + 사장님 몫(상태·메모·미루기·답·주소·순서 체크·💡반응).
+     예전엔 사장님 몫을 통째로 '마지막에 손댄 기기' 것으로 골라, 다른 기기에서 다른 칸을 고친 것이 지워졌다.
+     이제 사장님 몫은 칸마다(주소·체크·반응은 한 줄마다) 손댄 시각(uut)을 따로 두고 칸별로 더 새것을 고른다.
+     서버도 똑같은 규칙(Supabase public.pt_merge · 트리거 pt_items_merge)으로 합쳐서, 어느 기기가 옛 자료를 올려도 새 칸을 덮지 못한다.
+     옛 자료(uut 없음)는 옮기지 않고 그대로 읽는다 — uu(마지막 손댄 시각)가 칸별 시각보다 새것이면 그 기기의 '있는 칸'은 모두 uu 에 고친 것으로 본다(예전 방식).
+     없는 칸은 '모름'(-1)이라 있는 값을 지우지 못한다. 순서 체크는 순서 번호 그대로 두되, 클실장이 순서를 바꿔 올리면 그 전 순서 문장('t:문장')으로 옮겨 붙인다(PT-05).
+     이 블록은 tools/test_merge.py 가 꺼내(node) 파이썬 판(tools/ptmerge.py)과 같은 답을 내는지 시험한다(서버 SQL 대조는 그 파일 머리 설명) — 규칙을 바꾸면 SQL(public.pt_merge 등)도 같이 바꾼다. */
+  var UGRP = { st: ["status", "doneAt", "doneBy"], note: ["note"], snoozeTo: ["snoozeTo"], answer: ["answer"] };
+  var UMAP = ["urls", "checks", "react"];
+  var GOF = {}; Object.keys(UGRP).forEach(function (g) { UGRP[g].forEach(function (k) { GOF[k] = g; }); });
+  var META = ["u", "uu", "uut", "t0"];
+  function isObj(v) { return v !== null && typeof v === "object" && !Array.isArray(v); }
+  function own(o, k) { return isObj(o) && Object.prototype.hasOwnProperty.call(o, k) && o[k] !== undefined; }
+  function num(v) { return typeof v === "number" && isFinite(v) ? v : null; }
+  function same(a, b) {
+    if (a === b) return true;
+    if (a === null || b === null || typeof a !== "object" || typeof b !== "object" || Array.isArray(a) !== Array.isArray(b)) return false;
+    var ka = Object.keys(a).filter(function (k) { return a[k] !== undefined; }), kb = Object.keys(b).filter(function (k) { return b[k] !== undefined; });
+    return ka.length === kb.length && ka.every(function (k) { return Object.prototype.hasOwnProperty.call(b, k) && same(a[k], b[k]); });
+  }
+  function keysOf(o) { return isObj(o) ? Object.keys(o).filter(function (k) { return o[k] !== undefined; }) : []; }
+  function isUserKey(k) { return GOF[k] !== undefined || UMAP.indexOf(k) >= 0; }
+  function maxUt(x) {
+    var m = 0, t = isObj(x.uut) ? x.uut : {};
+    Object.keys(t).forEach(function (g) { var v = t[g]; if (num(v) !== null) m = Math.max(m, v); else if (isObj(v)) Object.keys(v).forEach(function (k) { if (num(v[k]) !== null) m = Math.max(m, v[k]); }); });
+    return m;
+  }
+  function legacy(x) { return (num(x.uu) || 0) > maxUt(x); }   // 옛 기기(칸별 시각을 모르는 앱)가 마지막으로 손댄 자료
+  function utOf(x, g) { var t = isObj(x.uut) ? x.uut[g] : undefined; return t; }
+  function gTime(x, g, lg) {
+    var t = num(utOf(x, g)), pres = UGRP[g].some(function (k) { return own(x, k); });
+    if (lg) return pres ? x.uu : (t !== null ? t : -1);
+    return t !== null ? t : pres ? 0 : -1;
+  }
+  function mTime(x, m, k, lg) {
+    var tm = utOf(x, m), t = isObj(tm) ? num(tm[k]) : null, pres = own(x[m], k);
+    if (lg) return pres ? x.uu : (t !== null ? t : -1);
+    return t !== null ? t : pres ? 0 : -1;
+  }
+  function stepKey(s) { return "t:" + s; }
+  /* 순서 체크(번호)를 순서 문장으로 옮겨 붙인다 — 그 사본의 순서가 합친 결과의 순서와 다를 때만(클실장이 순서를 바꿔 올린 때) */
+  function anchor(x, steps) {
+    var c = x.checks; if (!isObj(c)) return x;
+    var ut = isObj(x.uut) ? x.uut : {}, tc = isObj(ut.checks) ? ut.checks : null, isn = function (k) { return /^[0-9]+$/.test(k); };
+    var nums = keysOf(c).filter(isn); if (tc) keysOf(tc).filter(isn).forEach(function (k) { if (nums.indexOf(k) < 0) nums.push(k); });
+    if (!nums.length || same(x.steps === undefined ? null : x.steps, steps === undefined ? null : steps)) return x;
+    nums.sort(function (a, b) { return +a - +b; });
+    var st = Array.isArray(x.steps) ? x.steps : [], c2 = Object.assign({}, c), tc2 = tc ? Object.assign({}, tc) : null;
+    nums.forEach(function (k) {
+      var i = +k, nk = i < st.length && typeof st[i] === "string" ? stepKey(st[i]) : "o:" + k;
+      if (own(c, k) && !own(c2, nk)) { c2[nk] = c2[k]; if (tc2 && own(tc2, k)) tc2[nk] = tc2[k]; }
+      else if (!own(c, k) && tc2 && own(tc2, k) && !own(tc2, nk)) tc2[nk] = tc2[k];
+      delete c2[k]; if (tc2) delete tc2[k];
+    });
+    var y = Object.assign({}, x); y.checks = c2;
+    if (tc2) { y.uut = Object.assign({}, ut); y.uut.checks = tc2; }
+    return y;
+  }
+  /* a·b 를 합친다. 시각이 같으면 a 가 이긴다(앱: 이 기기 쪽 / 서버: 새로 올라온 쪽) */
+  function merge(a, b) {
+    if (!a) return b; if (!b) return a;
+    var ua = num(a.u) || 0, ub = num(b.u) || 0, base = ua >= ub ? a : b, o = {}, ut = {};
+    Object.keys(base).forEach(function (k) { if (base[k] !== undefined && !isUserKey(k) && META.indexOf(k) < 0) o[k] = base[k]; });
+    var A = anchor(a, o.steps), B = anchor(b, o.steps), la = legacy(a), lb = legacy(b);
+    Object.keys(UGRP).forEach(function (g) {
+      var ta = gTime(A, g, la), tb = gTime(B, g, lb), w = ta >= tb ? A : B, t = Math.max(ta, tb);
+      UGRP[g].forEach(function (k) { if (own(w, k)) o[k] = w[k]; });
+      if (t > 0) ut[g] = t;
+    });
+    UMAP.forEach(function (m) {
+      var ma = isObj(A[m]) ? A[m] : null, mb = isObj(B[m]) ? B[m] : null, out = {}, tm = {}, ks = [];
+      [keysOf(ma), keysOf(mb), keysOf(utOf(A, m)), keysOf(utOf(B, m))].forEach(function (l) { l.forEach(function (k) { if (ks.indexOf(k) < 0) ks.push(k); }); });
+      ks.forEach(function (k) {
+        var ta = mTime(A, m, k, la), tb = mTime(B, m, k, lb), w = ta >= tb ? ma : mb, t = Math.max(ta, tb);
+        if (own(w, k)) out[k] = w[k];
+        if (t > 0) tm[k] = t;
+      });
+      if (ma || mb) o[m] = out; else if (own(a, m)) o[m] = a[m]; else if (own(b, m)) o[m] = b[m];
+      if (Object.keys(tm).length) ut[m] = tm;
+    });
+    if (own(a, "u") || own(b, "u")) o.u = Math.max(ua, ub);
+    var uu = Math.max(num(a.uu) || 0, num(b.uu) || 0); if (uu > 0) o.uu = uu;
+    var t0a = num(a.t0), t0b = num(b.t0);
+    if (t0a !== null || t0b !== null) o.t0 = t0a === null ? t0b : t0b === null ? t0a : Math.min(t0a, t0b);
+    else if (own(a, "t0")) o.t0 = a.t0; else if (own(b, "t0")) o.t0 = b.t0;
+    if (Object.keys(ut).length) o.uut = ut;
     return o;
   }
+  /* 옛 기기가 마지막으로 손댄 자료면 지금 있는 칸마다 그 시각(uu)을 먼저 박아 둔다 — 새 고침이 다른 칸의 시각을 없애지 않게 */
+  function stamp(x) {
+    if (!legacy(x)) return x;
+    var y = Object.assign({}, x), uu = x.uu, ut = y.uut = Object.assign({}, isObj(x.uut) ? x.uut : {});
+    Object.keys(UGRP).forEach(function (g) { if (UGRP[g].some(function (k) { return own(x, k); })) ut[g] = uu; });
+    UMAP.forEach(function (m) { if (isObj(x[m])) { var tm = ut[m] = Object.assign({}, isObj(ut[m]) ? ut[m] : {}); keysOf(x[m]).forEach(function (k) { tm[k] = uu; }); } });
+    return y;
+  }
+  /* 사장님 몫 칸 고치기(이 기기·클실장 완료 둘 다). 바뀐 칸만 그 시각을 새로 박는다 — 값이 같으면 시각도 그대로(다른 기기의 새 값을 덮지 않게).
+     시각은 그 칸의 이전 시각보다 반드시 크게(기기 시계가 늦어도 이번 고침이 이기게) */
+  function applyUser(x, patch, now) {
+    var y = Object.assign({}, stamp(x)), ut = y.uut = Object.assign({}, isObj(y.uut) ? y.uut : {}), changed = false;
+    Object.keys(patch).forEach(function (k) {
+      var v = patch[k];
+      if (UMAP.indexOf(k) >= 0) {   // 주소·체크·반응은 통째로 새 묶음을 받아 줄마다 바뀐 것만 시각을 박는다(빠진 줄 = 지운 줄)
+        if (!isObj(v)) return;
+        var om = isObj(y[k]) ? y[k] : {}, tm = Object.assign({}, isObj(ut[k]) ? ut[k] : {}), any = false, seen = {};
+        keysOf(om).concat(keysOf(v)).forEach(function (s) {
+          if (seen[s]) return; seen[s] = 1;
+          if (own(v, s) === own(om, s) && (!own(v, s) || same(om[s], v[s]))) return;
+          tm[s] = Math.max(now, (num(tm[s]) || 0) + 1); any = true;
+        });
+        if (!any) return;
+        var nm = {}; keysOf(v).forEach(function (s) { nm[s] = v[s]; });
+        ut[k] = tm; y[k] = nm; changed = true;
+      } else if (GOF[k]) {
+        var had = own(y, k), nv = v === null || v === undefined ? undefined : v;
+        if (had ? (nv !== undefined && same(y[k], nv)) : nv === undefined) return;
+        var g = GOF[k];
+        ut[g] = Math.max(now, (num(ut[g]) || 0) + 1);
+        if (nv === undefined) delete y[k]; else y[k] = nv;
+        changed = true;
+      }
+    });
+    if (!changed) return null;
+    y.uu = Math.max(num(y.uu) || 0, maxUt(y));
+    return y;
+  }
+  /* 클실장 완료·취소(보낼 함 force) — 서버 public.pt_force 와 같은 규칙: 사장님이 이미 끝낸 일은 덮지 않고(PT-28), 손댄 칸만 시각을 박는다(PT-03) */
+  function applyForce(x, patch, now) {
+    var p = {}, ag = {};
+    Object.keys(patch || {}).forEach(function (k) { if (patch[k] !== undefined && META.indexOf(k) < 0) (isUserKey(k) ? p : ag)[k] = patch[k]; });
+    if (x.status === "done" && (p.status === "done" || p.status === "cancel")) { delete p.status; delete p.doneAt; delete p.doneBy; }
+    Object.keys(p).forEach(function (k) { if (UMAP.indexOf(k) >= 0) { if (isObj(p[k])) p[k] = Object.assign({}, isObj(x[k]) ? x[k] : {}, p[k]); else delete p[k]; } });
+    var y = applyUser(x, p, now) || Object.assign({}, stamp(x));
+    Object.keys(ag).forEach(function (k) { y[k] = ag[k]; });
+    y.u = Math.max(now, (num(x.u) || 0) + 1);
+    return y;
+  }
+  /* ==== MERGE END ==== */
   function setUser(id, patch, quiet) {
-    var x = S.items[id]; if (!x) return;
-    Object.keys(patch).forEach(function (k) { if (patch[k] === null) delete x[k]; else x[k] = patch[k]; });
-    x.uu = Date.now(); x.u = Date.now(); S.dirty[id] = 1; save();
+    var x = S.items[id]; if (!x) return true;
+    var y = applyUser(x, patch, Date.now());   // 클실장 몫 시각(u)은 올리지 않는다 — 오프라인에서 메모만 써도 클실장 새 제목·순서를 되돌리던 문제(PT-06)
+    if (!y) { if (!quiet) render(); return true; }
+    S.items[id] = y; S.dirty[id] = 1; var ok = save(); markSave();
     if (!quiet) render();
     syncSoon();
+    return ok;
   }
 
   /* ---------- Supabase ---------- */
@@ -123,8 +285,10 @@
       return rows && rows.length === 500 ? pullPage(q, off + 500, acc) : acc;
     });
   }
+  var again = false;
   function doSync() {
-    if (!SB || !sess || S.busy) return Promise.resolve();
+    if (!SB || !sess) return Promise.resolve();
+    if (S.busy) { again = true; return Promise.resolve(); }   // 올리는 중에 누른 것은 끝난 뒤 한 번 더(PT-08)
     S.busy = true; msg("동기화 중…");
     var first = !S.since, q;
     if (first) q = "&or=(" + encodeURIComponent("data->>status.eq.todo,updated_at.gt.\"" + new Date(Date.now() - KEEP_DAYS * 864e5).toISOString() + "\"") + ")";
@@ -136,26 +300,32 @@
         if (!l && r.kind === "check" && r.status !== "done") freshC++;
         else if (!l && r.kind !== "log" && (r.t0 || 0) > Date.now() - 864e5) fresh0++;
         var m = merge(l, r);
-        if (JSON.stringify(m) !== JSON.stringify(r)) S.dirty[row.id] = 1;
-        if (!l || JSON.stringify(l) !== JSON.stringify(m)) got++;
+        // 서버 것과 내용이 다를 때만 다시 올린다(칸별 시각만 붙은 것은 올리지 않는다 — 옛 자료를 한꺼번에 다시 쓰지 않게)
+        if (!same(bare(m), bare(r))) S.dirty[row.id] = 1;
+        if (!l || !same(l, m)) got++;
         S.items[row.id] = m;
         if (!S.since || row.updated_at > S.since) S.since = row.updated_at;
       });
       if (!S.since) S.since = nowIso();
+      Object.keys(S.dirty).forEach(function (id) { if (!S.items[id]) delete S.dirty[id]; });   // 올릴 내용이 없는 표시는 치운다
       prune(); save();
-      var ids = Object.keys(S.dirty).filter(function (id) { return S.items[id]; });
+      var ids = Object.keys(S.dirty);
       if (!ids.length) return 0;
+      var snap = {}; ids.forEach(function (id) { snap[id] = S.items[id]; });
       var body = ids.map(function (id) { return { user_id: sess.user.id, id: id, data: S.items[id] }; });
       return api("/rest/v1/pt_items?on_conflict=user_id,id", { method: "POST", auth: true, prefer: "resolution=merge-duplicates,return=minimal", body: body }).then(function () {
-        ids.forEach(function (id) { delete S.dirty[id]; }); save(); return ids.length;
+        // 보내는 동안 또 고친 할 일은 '보낼 것' 표시를 남겨 둔다(PT-08) — 고치면 항목이 새 것으로 바뀐다
+        ids.forEach(function (id) { if (S.items[id] === snap[id]) delete S.dirty[id]; }); save(); return ids.length;
       });
     }).then(function (sent) {
       S.busy = false;
       msg("동기화 완료 " + new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" }) + " · 받은 것 " + got + " · 보낸 것 " + sent);
       if (got) { render(); if (freshC && !first) chkToast(freshC); else if (fresh0 && !first) toast("클실장이 새 할 일 " + fresh0 + "건을 올렸습니다"); }
-      badge(); outbox();
-    }).catch(function (e) { S.busy = false; msg("동기화 실패: " + koErr(e.message || String(e))); });
+      badge(); markSave(); outbox();
+      if (again || Object.keys(S.dirty).length) { again = false; syncSoon(); }
+    }).catch(function (e) { S.busy = false; again = false; msg("동기화 실패: " + koErr(e.message || String(e))); markSave(); });
   }
+  function bare(x) { var o = {}; Object.keys(x || {}).forEach(function (k) { if (k !== "uut" && k !== "uu") o[k] = x[k]; }); return o; }
   /* PC 도우미의 보낼 함(클실장이 tools/pt.py add 로 넣은 것)을 가져와 사장님 계정으로 올린다.
      클실장 몫 칸만 바꾸고 사장님 몫 칸(체크·주소·답·메모·미루기)은 서버에 있는 값을 지킨다. */
   var obusy = false;
@@ -171,14 +341,19 @@
       return p.then(function (rows) {
         (rows || []).forEach(function (r) { S.items[r.id] = merge(S.items[r.id], r.data); });
         var now = Date.now(), nNew = 0, nChk = 0;
+        /* 서버 함수(pt_agent_upsert·pt_agent_set)와 같은 규칙: 다시 올린 할 일은 클실장 몫만 새것으로, 사장님 몫(체크·메모·주소·답…)은 칸별로 지킨다.
+           완료 표시(force)는 손댄 칸(상태)만 바꾸고 아직 안 올라간 사장님 메모는 그대로(PT-03) */
         items.forEach(function (x) {
           if (!x || !x.id) return;
-          var l = S.items[x.id], o = l ? Object.assign({}, l) : {};
-          if (!l && !x.title) return; // 없는 할 일에 완료 표시만 온 경우는 건너뛴다
-          Object.keys(x).forEach(function (k) { if (k === "force") return; if (l && (USER_KEYS.indexOf(k) >= 0 || k === "t0")) return; o[k] = x[k]; });
-          if (!l) { if (o.kind !== "log" && o.kind !== "sess" && !o.status) o.status = "todo"; o.t0 = o.t0 || now; if (o.kind === "task") nNew++; if (o.kind === "check") nChk++; }
-          if (x.force) { Object.keys(x.force).forEach(function (k) { o[k] = x.force[k]; }); o.uu = now; }
-          o.u = now; S.items[x.id] = o; S.dirty[x.id] = 1;
+          var l = S.items[x.id];
+          if (x.force) { if (l) { S.items[x.id] = applyForce(l, x.force, now); S.dirty[x.id] = 1; } return; }   // 없는 할 일에 완료 표시만 온 경우는 건너뛴다
+          if (!l && !x.title) return;
+          var n = {};
+          Object.keys(x).forEach(function (k) { if (x[k] !== undefined && k !== "force" && k !== "uu" && k !== "uut" && !(l && isUserKey(k))) n[k] = x[k]; });
+          n.u = Math.max(now, l ? (num(l.u) || 0) + 1 : 0);
+          if (!l) { if (n.kind !== "log" && n.kind !== "sess" && !n.status) n.status = "todo"; n.t0 = n.t0 || now; if (n.kind === "task") nNew++; if (n.kind === "check") nChk++; S.items[x.id] = n; }
+          else S.items[x.id] = merge(n, l);
+          S.dirty[x.id] = 1;
         });
         save(); render();
         return fetch("/api/outbox/ack", { method: "POST", headers: { "Content-Type": "application/json", "X-PT": "1" }, body: JSON.stringify({ files: files.map(function (f) { return f.name; }) }) }).then(function () {
@@ -430,10 +605,12 @@
   function sorter(a, b) { return (progOf(b) ? 1 : 0) - (progOf(a) ? 1 : 0) || (a.due || "9999").localeCompare(b.due || "9999") || (a.pri || 3) - (b.pri || 3) || (a.order || 0) - (b.order || 0) || (a.t0 || 0) - (b.t0 || 0); }
 
   /* 진행중 = 사장님이 순서 체크를 하나라도 한, 아직 안 끝난 할 일 (2026-11-21 사장님, 원장 261121-32) — 제목을 형광펜으로 칠한 것처럼 */
+  /* 순서 i 체크 여부 — 지금 순서 번호(옛 형식 그대로)가 먼저, 없으면 클실장이 순서를 바꿔 올릴 때 순서 문장으로 옮겨 붙인 체크(PT-05) */
+  function ckOf(x, i) { var c = isObj(x.checks) ? x.checks : {}; if (own(c, String(i))) return !!c[i]; var s = (x.steps || [])[i]; return typeof s === "string" && !!c[stepKey(s)]; }
   function progOf(x) {
     if (x.status === "done" || x.status === "cancel" || !x.steps || !x.steps.length) return null;
-    var ck = x.checks || {}, n = 0;
-    for (var i = 0; i < x.steps.length; i++) if (ck[i]) n++;
+    var n = 0;
+    for (var i = 0; i < x.steps.length; i++) if (ckOf(x, i)) n++;
     if (!n) return null;
     /* 멈춤 = 사장님이 3일 넘게 손대지 않은 진행중 할 일(uu = 사장님이 마지막으로 체크·메모·주소를 바꾼 시각, 원장 261121-38). 일부러 미룬 일은 빼고 */
     var idle = x.uu ? Math.floor((Date.now() - x.uu) / 864e5) : 0;
@@ -456,8 +633,7 @@
   function body(x) {
     var id = esc(x.id), h = '<div class="body">' + ideasBox(x);
     if (x.steps && x.steps.length) {
-      var ck = x.checks || {};
-      h += "<h3>순서</h3><ol class=\"steps\">" + x.steps.map(function (s, i) { return '<li class="' + (ck[i] ? "ok" : "") + '"><input type="checkbox" data-act="step" data-id="' + id + '" data-i="' + i + '"' + (ck[i] ? " checked" : "") + '><span class="grow">' + mark(linkify(s)) + '</span><button class="pc" data-act="para" data-id="' + id + '" data-i="' + i + '" title="이 문단만 복사해 클실장에게 고쳐 달라고 하기">⧉</button></li>'; }).join("") + "</ol>";
+      h += "<h3>순서</h3><ol class=\"steps\">" + x.steps.map(function (s, i) { var on = ckOf(x, i); return '<li class="' + (on ? "ok" : "") + '"><input type="checkbox" data-act="step" data-id="' + id + '" data-i="' + i + '"' + (on ? " checked" : "") + '><span class="grow">' + mark(linkify(s)) + '</span><button class="pc" data-act="para" data-id="' + id + '" data-i="' + i + '" title="이 문단만 복사해 클실장에게 고쳐 달라고 하기">⧉</button></li>'; }).join("") + "</ol>";
     }
     if (x.links && x.links.length) h += "<h3>바로 열기</h3>" + linkBtns(x.links);
     if (x.copies && x.copies.length) {
@@ -692,8 +868,9 @@
 
   /* ---------- 되돌리기·할 일로 가기 (2026-11-21 사장님: "되돌리기 하고 할 일로 가 보니 없어", 원장 261121-50) ---------- */
   function restoreTask(id) {
-    var x = S.items[id]; if (!x) return;
+    if (!S.items[id]) return;
     setUser(id, { status: "todo", doneAt: null, doneBy: null }, true);
+    var x = S.items[id];
     // 서버에서 가져온 옛 복사본도 같이 바꿔 '한 일'·찾기 화면에 완료로 남지 않게
     [S.remote.done, S.fr && S.fr.rows].forEach(function (arr) { (arr || []).forEach(function (r) { if (r && r.id === id) { r.status = "todo"; delete r.doneAt; delete r.doneBy; } }); });
     // '꼭 할 것만'·'진행중만'·분류 칸이 걸려 있으면 되돌린 일이 가려지므로 풀어 둔다
@@ -701,6 +878,21 @@
     var b = BUCKETS.filter(function (k) { return k[0] === bucket(x); })[0];
     render();
     toast("다시 할 일로 돌렸습니다 — 할 일의 '" + (b ? b[1] : "할 일") + "' 칸에 있습니다", { label: "할 일에서 보기", fn: function () { goTask(id); } });
+  }
+  /* 로그아웃(2026-11-24 고침 PT-04): 아직 안 올라간 것이 있으면 먼저 올려 보고, 그래도 남으면 묻는다.
+     로그아웃해도 그 할 일들은 이 기기 'pend'(계정별)에 남아 같은 계정으로 다시 로그인하면 올라간다 — 묻지 않고 지우던 길을 막음 */
+  function pendingCount() { return Object.keys(S.dirty).filter(function (id) { return S.items[id]; }).length; }
+  function logout() {
+    var go = function () {
+      var n = pendingCount();
+      if (n && !window.confirm("아직 서버에 안 올라간 할 일이 " + n + "건 있습니다(체크·메모·답 등).\n\n[확인] 이 기기에 따로 보관하고 로그아웃합니다 — 같은 계정으로 다시 로그인하면 그때 올라갑니다.\n[취소] 로그아웃하지 않습니다 — 인터넷 연결을 확인한 뒤 [지금 동기화]를 먼저 눌러 주세요.")) { msg("로그아웃을 취소했습니다 — 안 올라간 것 " + n + "건"); return; }
+      save();   // 지금 계정의 안 올라간 것을 pend 에 확실히 남긴다
+      setSess(null); S.items = {}; S.dirty = {}; S.since = "";
+      LS.set("items", S.items); LS.set("dirty", S.dirty); LS.set("since", "");   // pend 는 건드리지 않는다
+      render();
+      if (n) toast("안 올라간 " + n + "건은 이 기기에 보관했습니다 — 다시 로그인하면 올라갑니다");
+    };
+    if (pendingCount() && SB && sess) { msg("로그아웃 전에 안 올라간 것을 올리는 중…"); doSync().then(go, go); } else go();
   }
   function goTask(id) {
     var x = S.items[id];
@@ -771,12 +963,12 @@
     if (a === "pick" && x) { var o = x.choice.opts[+t.getAttribute("data-i")], an = Object.assign({}, x.answer || {}); an.pick = an.pick === o ? null : o; an.at = nowIso(); setUser(id, { answer: an }); S.open[id] = true; render(); toast(an.pick ? "답을 저장했습니다 — 할 일을 다 마치면 맨 아래 [✓ 했어요]를 눌러 주세요" : "고른 답을 지웠습니다"); return; }   // 11-22 사장님(원장 261122-45): 결정·답은 저장만 — '한 일'로는 [✓ 했어요]로만 넘어간다
     if (a === "rsearch") { remoteSearch(t.getAttribute("data-k")); return; }
     if (a === "sync") { doSync(); return; }
-    if (a === "logout") { setSess(null); S.items = {}; S.dirty = {}; S.since = ""; save(); render(); return; }
+    if (a === "logout") { logout(); return; }
     if (a === "login") {
       var em = ($("#em").value || "").trim(), pw = $("#pw").value || "";
       if (!em || !pw) { msg("이메일과 비밀번호를 넣어 주세요."); return; }
       msg("로그인 중…");
-      api("/auth/v1/token?grant_type=password", { method: "POST", body: { email: em, password: pw } }).then(function (j) { setSess(j); S.view = "todo"; LS.set("view", "todo"); render(); doSync(); }, function (e) { msg("로그인 실패: " + koErr(e.message)); });
+      api("/auth/v1/token?grant_type=password", { method: "POST", body: { email: em, password: pw } }).then(function (j) { setSess(j); var nb = restorePend(); S.view = "todo"; LS.set("view", "todo"); render(); doSync(); if (nb) toast("지난번에 못 올린 것 " + nb + "건을 다시 올립니다"); }, function (e) { msg("로그인 실패: " + koErr(e.message)); });
     }
   });
   document.addEventListener("change", function (ev) {
@@ -786,9 +978,9 @@
     if (!x) return;
     if (a === "url" || a === "note" || a === "ans") { var dkey = dk(a, id, a === "url" ? t.getAttribute("data-k") : ""); if (S.drafts[dkey] != null) { delete S.drafts[dkey]; LS.set("drafts", S.drafts); markSave(); } }
     if (a === "step") { var ck = Object.assign({}, x.checks || {}); ck[t.getAttribute("data-i")] = t.checked; setUser(id, { checks: ck }); return; }
-    if (a === "url") { var u = Object.assign({}, x.urls || {}); u[t.getAttribute("data-k")] = t.value.trim(); setUser(id, { urls: u }); toast("주소를 저장했습니다"); return; }
-    if (a === "note") { setUser(id, { note: t.value }, true); toast("메모를 저장했습니다"); return; }
-    if (a === "ans") { var an = Object.assign({}, x.answer || {}); an.text = t.value.trim(); an.at = nowIso(); setUser(id, { answer: an }); toast("답을 저장했습니다 — 할 일을 다 마치면 맨 아래 [✓ 했어요]를 눌러 주세요"); return; }   // 11-22 저장만(원장 261122-45)
+    if (a === "url") { var u = Object.assign({}, x.urls || {}); u[t.getAttribute("data-k")] = t.value.trim(); setUser(id, { urls: u }); savedToast("주소를 저장했습니다"); return; }
+    if (a === "note") { setUser(id, { note: t.value }, true); savedToast("메모를 저장했습니다"); return; }
+    if (a === "ans") { var an = Object.assign({}, x.answer || {}); an.text = t.value.trim(); an.at = nowIso(); setUser(id, { answer: an }); savedToast("답을 저장했습니다 — 할 일을 다 마치면 맨 아래 [✓ 했어요]를 눌러 주세요"); return; }   // 11-22 저장만(원장 261122-45)
   });
   document.addEventListener("toggle", function (ev) { var s = ev.target.getAttribute && ev.target.getAttribute("data-sec"); if (s) S.open["sec_" + s] = ev.target.open; var s2 = ev.target.getAttribute && ev.target.getAttribute("data-isec"); if (s2) S.open["isec_" + s2] = ev.target.open; if (s || s2) LS.set("open", S.open); }, true);
   var st = 0;
@@ -854,6 +1046,8 @@
   });
 
   window.PT_BUILD = window.PT_BUILD || (typeof PT_BUILD !== "undefined" ? PT_BUILD : "");
+  if (sess) restorePend();   // 지난번에 못 올린 것(저장 공간 부족 등)부터 되살린다
   renderBiz(); render(); markSave(); checkLocal(); if (sess) doSync(); badge();
+  window.addEventListener("online", function () { doSync(); });   // 인터넷이 다시 되면 바로 올린다
   (function () { var sy = LS.get("scroll", 0); if (sy > 0) setTimeout(function () { window.scrollTo(0, sy); }, 60); })();  // 저장해 둔 보던 자리로
 })();
