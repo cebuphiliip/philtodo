@@ -230,3 +230,65 @@ mark { background: #ffe066; color: inherit; padding: 0 1px; border-radius: 3px; 
 .ck-sec .btn { margin-left: auto; }
 .ckempty b { color: var(--ink); }
 .helperdown { margin: 12px 0; padding: 10px 14px; border-radius: 12px; background: #fff4e5; border: 1px solid #f0b46b; color: #7a3d00; font-size: 14px; }
+
+/* ---------- 2026-11-24 전수조사 T4 ---------- */
+/* 요약 칸 글자: PC 는 긴 글, 폰은 짧은 글(PT-13) */
+.sum .sh { display: none; }
+/* '오늘 꼭' 칸 — 누르면 꼭 할 것만(PT-I2) */
+.sum .must-tile { cursor: pointer; }
+.sum .must-tile.on { border-color: var(--navy); box-shadow: 0 0 0 2px var(--navy); background: #fff7ef; }
+.more { font-size: 12.5px; color: #1c5fd1; margin-top: 1px; }
+/* 클실장 질문 칸(PT-12) — 주소 자판이 아니라 글 상자 */
+.qa { margin: 8px 0 10px; }
+.qa .qq { font-size: 13.5px; font-weight: 600; color: var(--ink); margin-bottom: 4px; word-break: keep-all; overflow-wrap: anywhere; }
+.qa textarea { min-height: 40px; field-sizing: content; max-height: 220px; }
+.qa.filled textarea { border-color: var(--ok); background: #f1fbf6; }
+.qa.draft textarea { border-color: var(--gold); background: #fffbea; }
+.badge.q { background: #e7f0ff; color: #1c4fa8; }
+.badge.q.all { background: #e6f7ee; color: var(--ok); }
+.qa1 { margin-top: 2px; word-break: keep-all; overflow-wrap: anywhere; }
+.qa1 span { color: var(--mute); }
+.qa1 b { color: var(--ink); font-weight: 700; }
+/* 복사 문구가 많을 때 하나씩 접기(PT-14) */
+details.copy > summary { list-style: none; cursor: pointer; }
+details.copy > summary::-webkit-details-marker { display: none; }
+details.copy > summary b::before { content: "▸ "; color: var(--mute); }
+details.copy[open] > summary b::before { content: "▾ "; }
+details.copy:not([open]) > summary { border-bottom: 0; }
+/* 폰 사진 [복사] — 눌리긴 하고 안내가 뜬다(PT-25) */
+.btn.dim { opacity: .55; }
+/* 인터넷 끊김·못 올림 띠(PT-17) */
+.offband { margin: 0 0 10px; padding: 9px 12px; border-radius: 12px; background: #eef3ff; border: 1px solid #b6c8f0; color: #1d3a7a; font-size: 13.5px; }
+.offband .btn { margin-left: 6px; }
+.list .d.late { color: var(--red); font-weight: 700; }
+
+@media (max-width: 560px) {
+  /* 폰 첫 화면에 할 일이 여러 장 보이게(PT-13): 머리·요약·보기 단추를 줄인다 */
+  .top { padding: 7px 10px; gap: 7px; }
+  .mark { width: 30px; height: 30px; }
+  .brand { font-size: 17px; }
+  .sum { flex-wrap: nowrap; overflow-x: auto; gap: 5px; margin: 0 0 6px; scrollbar-width: none; }
+  .sum::-webkit-scrollbar { display: none; }
+  .sum > div { flex: 0 0 auto; display: flex; align-items: baseline; gap: 4px; padding: 6px 9px; border-radius: 10px; white-space: nowrap; }
+  .sum b { display: inline; font-size: 16px; }
+  .sum .lg { display: none; }
+  .sum .sh { display: inline; }
+  .sum .prog-tile .stallc { font-size: 11px; }
+  .mode { margin: 0 0 6px; gap: 5px; }
+  .mode button { padding: 7px 6px; font-size: 13px; border-radius: 10px; }
+  .chips { padding-bottom: 4px; }
+  .sec { margin: 10px 0 2px; }
+  .task .head { padding: 10px 12px; gap: 9px; }
+  .why.clamp { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  /* 손가락으로 누르기 쉽게(PT-15) — 보이는 크기는 거의 그대로, 누르는 곳만 넓힌다 */
+  .chk { width: 34px; height: 34px; }
+  .pc { width: 38px; height: 36px; }
+  .steps li { padding: 7px 0; }
+  .steps input { width: 22px; height: 22px; margin-top: 2px; }
+  .btn.sm { min-height: 38px; padding: 7px 11px; }
+  .rb button:not(.pc) { padding: 8px 13px; }
+  .chip { padding: 7px 12px; }
+  .biz, .chkbtn { position: relative; }
+  .biz::after, .chkbtn::after { content: ""; position: absolute; inset: -5px -2px; }
+  .cktask a, a.from { display: inline-block; padding: 5px 0; }
+}

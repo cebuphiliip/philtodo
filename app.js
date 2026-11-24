@@ -273,7 +273,7 @@
   function fresh() {
     if (!sess) return Promise.reject(new Error("로그인이 필요합니다."));
     if (sess.expires_at * 1000 - Date.now() > 60000) return Promise.resolve();
-    return api("/auth/v1/token?grant_type=refresh_token", { method: "POST", body: { refresh_token: sess.refresh_token } }).then(setSess, function (e) { if (e.status === 400 || e.status === 401) { setSess(null); render(); } throw e; });
+    return api("/auth/v1/token?grant_type=refresh_token", { method: "POST", body: { refresh_token: sess.refresh_token } }).then(setSess, function (e) { if (e.status === 400 || e.status === 401) { LS.set("expired", { at: Date.now() }); setSess(null); render(); } throw e; });
   }
   function koErr(m) { return /Invalid login/i.test(m) ? "이메일 또는 비밀번호가 맞지 않습니다." : /not confirmed/i.test(m) ? "메일 확인이 아직입니다." : m; }
   var timer = 0;
@@ -319,11 +319,12 @@
       });
     }).then(function (sent) {
       S.busy = false;
+      if (S.syncFail) { S.syncFail = false; got = got || 1; }   // 띠(PT-17)를 거두려고 한 번 다시 그린다
       msg("동기화 완료 " + new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" }) + " · 받은 것 " + got + " · 보낸 것 " + sent);
       if (got) { render(); if (freshC && !first) chkToast(freshC); else if (fresh0 && !first) toast("클실장이 새 할 일 " + fresh0 + "건을 올렸습니다"); }
       badge(); markSave(); outbox();
       if (again || Object.keys(S.dirty).length) { again = false; syncSoon(); }
-    }).catch(function (e) { S.busy = false; again = false; msg("동기화 실패: " + koErr(e.message || String(e))); markSave(); });
+    }).catch(function (e) { S.busy = false; again = false; msg("동기화 실패: " + koErr(e.message || String(e))); markSave(); if (!S.syncFail && sess) { S.syncFail = true; render(); } });
   }
   function bare(x) { var o = {}; Object.keys(x || {}).forEach(function (k) { if (k !== "uut" && k !== "uu") o[k] = x[k]; }); return o; }
   /* PC 도우미의 보낼 함(클실장이 tools/pt.py add 로 넣은 것)을 가져와 사장님 계정으로 올린다.
@@ -411,10 +412,11 @@
     (x.ideas || []).forEach(function (d) { F.push([d.t === "아이디어" ? "💡 아이디어" : "실장 제안", d.text]); });
     F.push(["내 메모", x.note]);
     if (x.answer) F.push(["내 답", [x.answer.pick, x.answer.text].filter(Boolean).join(" / ")]);
-    var u = x.urls || {}; Object.keys(u).forEach(function (k) { F.push(["올린 주소", u[k]]); });
+    var u = x.urls || {}; Object.keys(u).forEach(function (k) { if (u[k] == null || u[k] === "") return; F.push(isLink(u[k]) ? ["올린 주소", u[k]] : ["내 답 · " + cut(labelOf(x, k), 30), u[k]]); });
     if (x.choice) F.push(["결정", (x.choice.q || "") + " " + (x.choice.opts || []).join(" / ")]);
     (x.links || []).concat(x.images || []).forEach(function (l) { F.push(["파일", (l.label || "") + " " + (l.path || l.url || "")]); });
-    (x.fields || []).forEach(function (f) { F.push(["주소 칸", f.label]); });
+    qList(x).forEach(function (q) { F.push(["클실장 질문", q.q]); });
+    urlFields(x).forEach(function (f) { F.push(["주소 칸", f.label]); });
     F.push(["출처", x.src], ["끝나면 클실장이", x.after], ["분류", [x.area, x.biz, x.group, x.state, (CAT[x.cat] || {}).label].filter(Boolean).join(" ")], ["번호", x.id]);
     return F.filter(function (f) { return f[1]; });
   }
@@ -540,7 +542,7 @@
     });
   }
   function copyImage(p) {
-    if (!S.local) { toast("사진 복사는 PC 필투두에서 됩니다(폰은 길게 눌러 저장)"); return; }
+    if (!S.local) { toast("사진은 PC 필투두(도우미 켜진 PC)에서 보이고 복사됩니다 — 폰에서 꺼내는 기능은 아직 없습니다"); return; }
     if (!window.ClipboardItem) { toast("이 브라우저는 사진 복사를 못 합니다 — 크롬·엣지를 써 주세요"); return; }
     var pr = fetch(fileUrl(p)).then(function (r) { if (!r.ok) throw new Error("사진을 찾지 못했습니다"); return r.blob(); }).then(toPng);
     navigator.clipboard.write([new ClipboardItem({ "image/png": pr })]).then(function () { toast("사진을 복사했습니다 — 카페 글쓰기에 붙여넣기(Ctrl+V)"); }, function () {
@@ -560,12 +562,21 @@
     try { h = v === "find" ? viewFind() : v === "check" ? viewCheck() : v === "done" ? viewDone() : v === "kl" ? viewKl() : v === "set" ? viewSet() : v === "idea" ? viewIdeas() : viewTodo(); }
     catch (e) { if (window.console) console.error(e); h = '<div class="card"><h2>화면을 그리다 문제가 생겼습니다</h2><p class="note">' + esc(e && e.message || e) + '</p><p class="note">맨 위 메뉴로 다른 화면에 갔다가 다시 와 보시고, 계속되면 이 문장을 클실장에게 알려 주세요.</p></div>'; }
     if (S.helperDown) h = '<div class="helperdown"><b>PC 도우미가 꺼져 있습니다.</b> 할 일 체크·동기화는 되지만 클실장이 올린 새 할 일·사진 복사·폴더 열기가 멈춥니다. 클실장에게 <b>"도우미 켜 줘"</b>라고 하시거나, PC를 다시 켜면 자동으로 켜집니다. <button class="btn sm ghost" type="button" onclick="location.reload()">다시 확인</button></div>' + h;
+    /* 인터넷이 끊겼거나 서버에 못 올렸으면 맨 위 띠로 알린다 — 고친 것은 이 기기에 보관 중(PT-17) */
+    var np = sess ? pendingCount() : 0;
+    if (sess && (navigator.onLine === false || (S.syncFail && np))) h = '<div class="offband">' + (navigator.onLine === false ? "<b>인터넷이 끊겼습니다.</b> " : "<b>서버에 아직 못 올렸습니다.</b> ") +
+      (np ? "고친 것 " + np + "건은 이 기기에 보관 중이고, 연결되면 바로 올라갑니다." : "보던 화면은 그대로 쓸 수 있고, 연결되면 바로 새로 받습니다.") + (navigator.onLine === false ? "" : ' <button class="btn sm ghost" type="button" data-act="sync">다시 올리기</button>') + "</div>" + h;
     var ni = $("#navIdea"); if (ni) { var fi = sess ? freshIdeas().length : 0; ni.textContent = fi; ni.style.display = fi ? "" : "none"; }
     chkBtn();
     $("#app").innerHTML = h;
+    /* 폰: 2줄로 줄인 설명이 실제로 넘칠 때만 '… 더보기'(누르면 카드가 펼쳐진다) */
+    if (window.matchMedia && window.matchMedia("(max-width: 560px)").matches) document.querySelectorAll("#app .why.clamp").forEach(function (el) { if (el.scrollHeight > el.clientHeight + 2) el.insertAdjacentHTML("afterend", '<div class="more">… 더보기</div>'); });
     $("#ver").textContent = "필투두 " + (window.PT_BUILD || "") + (S.local ? " · PC 도우미 연결됨" : "");
   }
   function needLogin() {
+    /* 로그인이 풀린 것이면(새로고침 열쇠 만료 등) 할 일이 사라진 게 아니라고 먼저 알린다(PT-26) */
+    var ex = LS.get("expired", null), n = Object.keys(S.dirty).length;
+    if (ex) return '<div class="card warnbox"><h2>로그인이 풀렸습니다 — 할 일은 그대로 있습니다</h2><p class="note">' + (ex.at ? esc(hm(ex.at)) + "에 " : "") + "로그인 기간이 끝났습니다. 할 일은 서버에 그대로 있고, " + (n ? "아직 못 올린 것 " + n + "건도 이 기기에 보관 중입니다 — 같은 계정으로 다시 로그인하면 그대로 올라갑니다." : "같은 계정으로 다시 로그인하면 바로 다시 보입니다.") + '</p><button class="btn" data-view="set">다시 로그인하기</button></div>';
     return '<div class="card"><h2>로그인하면 할 일이 보입니다</h2><p class="note">필보드와 같은 이메일·비밀번호로 한 번만 로그인하면 이 기기에 계속 남습니다. 클실장이 올린 할 일과 사장님 체크가 PC·폰에 같이 보입니다.</p><button class="btn" data-view="set">로그인하러 가기</button></div>';
   }
 
@@ -579,9 +590,13 @@
     var nc = newChecks(), hc = nc.filter(function (x) { return x.lv === 1; }).length;
     var h = nc.length ? '<button type="button" class="ckstrip' + (hc ? " hot" : "") + '" data-view="check"><b>체크 ' + nc.length + "</b><span>" + (hc ? "급한 보고 " + hc + "건 — " : "") + "클실장이 꼭 알려 드릴 것이 있습니다</span><i>보기 →</i></button>" : "";
     /* 진행중 칸 — 누르면 진행중 할 일만, 다시 누르면 전체 (2026-11-21 사장님, 원장 261121-37) */
-    var prog = all.filter(progOf), pOn = S.mode === "prog", nStall = prog.filter(function (x) { return progOf(x).stall; }).length;
-    var pTile = '<div class="prog-tile' + (prog.length ? " has" : "") + (pOn ? " on" : "") + '"' + (prog.length || pOn ? ' data-mode="' + (pOn ? "all" : "prog") + '" role="button" title="' + (pOn ? "전체 보기로 돌아가기" : "진행중인 할 일만 보기") + '"' : "") + '><b><span class="hl">' + prog.length + "</span></b><span>" + (pOn ? "진행중만 보는 중" : "진행중 보기") + (nStall ? ' <em class="stallc">멈춤 ' + nStall + "</em>" : "") + "</span></div>";
-    h += '<div class="sum"><div><b>' + all.length + '</b><span>남은 일 전체</span></div>' + pTile + '<div class="hot"><b>' + must.length + "</b><span>오늘 꼭" + (mins ? " · 약 " + mins + "분" : "") + '</span></div><div><b>' + dec + '</b><span>결정 기다리는 것</span></div><div><b>' + doneToday + '</b><span>오늘 끝낸 일</span></div><div class="idea-tile" data-view="idea"><b>💡 ' + freshIdeas().length + '</b><span>새 제안·아이디어 보기</span></div></div>';
+    var prog = all.filter(progOf), pOn = S.mode === "prog", mOn = S.mode === "must", nStall = prog.filter(function (x) { return progOf(x).stall; }).length;
+    /* 요약 칸 글자: lg = PC, sh = 폰(한 줄에 다 들어가게 짧게 — 2026-11-24 전수조사 PT-13) */
+    function lab(lg, sh, extra) { return '<span class="lab"><span class="lg">' + lg + '</span><span class="sh">' + sh + "</span>" + (extra || "") + "</span>"; }
+    var pTile = '<div class="prog-tile' + (prog.length ? " has" : "") + (pOn ? " on" : "") + '"' + (prog.length || pOn ? ' data-mode="' + (pOn ? "all" : "prog") + '" role="button" title="' + (pOn ? "전체 보기로 돌아가기" : "진행중인 할 일만 보기") + '"' : "") + '><b><span class="hl">' + prog.length + "</span></b>" + lab(pOn ? "진행중만 보는 중" : "진행중 보기", "진행중", nStall ? ' <em class="stallc">멈춤 ' + nStall + "</em>" : "") + "</div>";
+    /* '오늘 꼭' 칸 — 누르면 '꼭 할 것만', 다시 누르면 전체 (PT-I2) */
+    var mTile = '<div class="hot must-tile' + (mOn ? " on" : "") + '" data-mode="' + (mOn ? "all" : "must") + '" role="button" title="' + (mOn ? "전체 보기로 돌아가기" : "오늘 꼭 할 것만 보기") + '"><b>' + must.length + "</b>" + lab((mOn ? "꼭 할 것만 보는 중" : "오늘 꼭 — 누르면 이것만") + (mins ? " · 약 " + mins + "분" : ""), "오늘 꼭") + "</div>";
+    h += '<div class="sum"><div><b>' + all.length + "</b>" + lab("남은 일 전체", "남은 일") + "</div>" + pTile + mTile + "<div><b>" + dec + "</b>" + lab("결정 기다리는 것", "결정") + "</div><div><b>" + doneToday + "</b>" + lab("오늘 끝낸 일", "오늘 끝냄") + '</div><div class="idea-tile" data-view="idea"><b>💡 ' + freshIdeas().length + "</b>" + lab("새 제안·아이디어 보기", "새 제안") + "</div></div>";
     h += '<div class="mode"><button data-mode="all" class="' + (S.mode === "all" ? "on" : "") + '">전체 보기</button><button data-mode="must" class="' + (S.mode === "must" ? "on" : "") + '">시간 없을 때 — 꼭 할 것만</button></div>';
     if (pOn) h += '<div class="progbar"><span><b>진행중</b>인 할 일 ' + prog.length + "건만 보고 있습니다</span><button class=\"btn sm ghost\" data-mode=\"all\">전체 보기</button></div>";
     var pool = S.mode === "must" ? must : pOn ? prog : all, counts = {};
@@ -616,15 +631,23 @@
     var idle = x.uu ? Math.floor((Date.now() - x.uu) / 864e5) : 0;
     return { n: n, of: x.steps.length, stall: idle >= 3 && !(x.snoozeTo && x.snoozeTo > today()) ? idle : 0 };
   }
+  /* 카드 왼쪽 위 네모(PT-16): 사장님 결정(원장 261124-72) "네모도 남겨" = "done" 누르면 바로 완료(맨 아래 [✓ 했어요]와 둘 다 쓴다).
+     바꾸려면 "open"(펼치기만) · "ask"(한 번 묻고 완료) */
+  var HEAD_BOX = "done";
   function card(x) {
     var op = !!S.open[x.id], td = today(), done = x.status === "done", pg = progOf(x);
     var isNew = !done && (x.t0 || 0) > Date.now() - 864e5;
-    var h = '<div class="card task' + (done ? " done" : "") + (pg ? " prog" : "") + '" id="c_' + esc(x.id) + '"><div class="head"><button class="chk" data-act="toggle" data-id="' + esc(x.id) + '" title="했어요">✓</button><div class="grow" data-act="expand" data-id="' + esc(x.id) + '">';
+    var box = HEAD_BOX === "open" ? '<button class="chk" data-act="expand" data-id="' + esc(x.id) + '" title="펼쳐 보기 — 다 하시면 맨 아래 [✓ 했어요]">✓</button>'
+      : '<button class="chk" data-act="toggle" data-head="1" data-id="' + esc(x.id) + '" title="했어요">✓</button>';
+    var ql = qList(x), qn = ql.filter(function (q) { return (x.urls || {})[q.key]; }).length;
+    var h = '<div class="card task' + (done ? " done" : "") + (pg ? " prog" : "") + '" id="c_' + esc(x.id) + '"><div class="head">' + box + '<div class="grow" data-act="expand" data-id="' + esc(x.id) + '">';
     h += '<div class="t">' + (pg ? '<span class="badge prog">진행중 ' + pg.n + "/" + pg.of + "</span> " + (pg.stall ? '<span class="badge stall" title="마지막으로 손대신 날 ' + md(ymd(new Date(x.uu))) + '">멈춤 ' + pg.stall + "일</span> " : "") : "") + (isNew ? '<span class="badge new">새</span> ' : "") + (x.status === "cancel" ? '<span class="badge">취소됨</span> ' : "") + (pg ? '<span class="hl">' + mark(esc(x.title)) + "</span>" : mark(esc(x.title))) + "</div>";
     h += '<div class="meta">' + catChip(x.cat) + (x.due ? '<span class="due' + (x.due < td && !done ? " late" : "") + '">' + (x.due < td && !done ? "기한 지남 " : "") + md(x.due) + (x.dueNote ? " " + esc(x.dueNote) : "") + "</span>" : "") +
       (x.mins ? "<span>약 " + x.mins + "분</span>" : "") + (x.biz ? "<span>" + esc(x.biz) + "</span>" : "") + (x.snoozeTo && x.snoozeTo > td ? "<span>" + md(x.snoozeTo) + "까지 미룸</span>" : "") +
-      (x.answer ? '<span class="badge">답함</span>' : "") + (x.ideas && x.ideas.length ? '<span class="badge idea">💡 제안·아이디어 ' + x.ideas.length + "</span>" : "") + "</div>";
-    if (x.why) h += '<div class="why">' + mark(esc(x.why)) + "</div>";
+      (x.answer ? '<span class="badge">답함</span>' : "") + (ql.length ? '<span class="badge q' + (qn >= ql.length ? " all" : "") + '">질문 ' + (qn ? qn + "/" : "") + ql.length + (qn >= ql.length ? " 답함" : "") + "</span>" : "") +
+      (x.ideas && x.ideas.length ? '<span class="badge idea">💡 제안·아이디어 ' + x.ideas.length + "</span>" : "") + "</div>";
+    /* 접힌 카드의 설명은 폰에서 2줄까지만(PT-13) — 넘치면 render 가 '… 더보기'를 단다. 찾기 화면·펼친 카드는 다 보인다 */
+    if (x.why) h += '<div class="why' + (!op && S.view !== "find" ? " clamp" : "") + '">' + mark(esc(x.why)) + "</div>";
     if (S.view === "find") h += snip(x);
     h += "</div></div>";
     if (op) h += body(x);
@@ -637,17 +660,32 @@
     }
     if (x.links && x.links.length) h += "<h3>바로 열기</h3>" + linkBtns(x.links);
     if (x.copies && x.copies.length) {
-      h += "<h3>복사해서 붙여넣기</h3>" + x.copies.map(function (c, i) { return '<div class="copy"><div class="ch"><b>' + esc(c.label) + '</b><button class="btn sm" data-act="copy" data-id="' + id + '" data-i="' + i + '">복사</button></div><pre>' + mark(esc(c.text)) + "</pre></div>"; }).join("");
+      /* 복사 문구가 5개 넘으면(요금 카드 20장 등) 하나씩 접어 둔다 — 펼친 것은 기억(PT-14) */
+      var many = x.copies.length > 5;
+      h += "<h3>복사해서 붙여넣기" + (many ? " — " + x.copies.length + "개, 눌러서 하나씩 펼쳐 보세요" : "") + "</h3>" + x.copies.map(function (c, i) {
+        var top = "<b>" + esc(c.label) + '</b><button class="btn sm" data-act="copy" data-id="' + id + '" data-i="' + i + '">복사</button>', pre = "<pre>" + mark(esc(c.text)) + "</pre>";
+        if (!many) return '<div class="copy"><div class="ch">' + top + "</div>" + pre + "</div>";
+        return '<details class="copy" data-cp="' + id + "|" + i + '"' + (S.open["cp|" + x.id + "|" + i] ? " open" : "") + '><summary class="ch">' + top + "</summary>" + pre + "</details>";
+      }).join("");
     }
     if (x.images && x.images.length) {
       h += "<h3>사진 — [복사] 누르고 바로 붙여넣기</h3><div class=\"imgs\">" + x.images.map(function (m) {
         return '<div class="img">' + (S.local ? '<div class="ph" data-act="zoom" data-src="' + esc(fileUrl(m.path)) + '" style="background-image:url(\'' + esc(fileUrl(m.path)).replace(/'/g, "%27") + '\')"></div>' : '<div class="noimg">사진은 PC 필투두에서 보입니다</div>') +
-          '<div class="cap">' + esc(m.label || m.path.split("/").pop()) + '</div><div class="btns"><button class="btn sm' + (S.local ? "" : " off") + '" data-act="img" data-p="' + esc(m.path) + '">복사</button>' + (S.local ? '<button class="btn sm ghost" data-act="folder" data-p="' + esc(m.path) + '">폴더</button>' : "") + "</div></div>";
+          // 폰에서도 [복사]를 누르면 왜 안 되는지 알려 준다(예전엔 눌리지도 않아 안내가 안 떴다 — PT-25)
+          '<div class="cap">' + esc(m.label || m.path.split("/").pop()) + '</div><div class="btns"><button class="btn sm' + (S.local ? "" : " dim") + '" data-act="img" data-p="' + esc(m.path) + '">복사</button>' + (S.local ? '<button class="btn sm ghost" data-act="folder" data-p="' + esc(m.path) + '">폴더</button>' : "") + "</div></div>";
       }).join("") + "</div>";
     }
-    if (x.fields && x.fields.length) {
-      var u = x.urls || {};
-      h += "<h3>올린 뒤 주소 넣기 — 클실장이 읽고 등록부·링크를 채웁니다</h3>" + x.fields.map(function (f) {
+    /* 클실장 질문(PT-12): qs[{key,q,ph,need}] + 주소가 아닌 옛 fields(질문을 주소 칸으로 받던 것)는 글 상자로 받는다.
+       답은 예전처럼 urls[key] 에 저장 — 사장님 칸 합치기(uut) 규칙은 그대로 */
+    var u = x.urls || {}, ql = qList(x), uf = urlFields(x);
+    if (ql.length) {
+      h += "<h3>클실장 질문 — 아시는 것만 짧게 적어 주세요</h3>" + ql.map(function (q) {
+        var val = draftOf("url", x.id, q.key, u[q.key] || ""), dr = S.drafts[dk("url", x.id, q.key)] != null;
+        return '<div class="qa' + (val ? " filled" : "") + (dr ? " draft" : "") + '"><div class="qq">' + mark(linkify(q.q)) + (q.need ? ' <span class="badge pri1">꼭</span>' : "") + '</div><textarea rows="1" data-act="url" data-q="1" data-id="' + id + '" data-k="' + esc(q.key) + '" placeholder="' + esc(q.ph || "답을 적어 주세요") + '" aria-label="' + esc(q.q) + '">' + esc(val) + "</textarea></div>";
+      }).join("") + '<p class="note">적으면 바로 저장됩니다 — 클실장이 다음 작업 때 읽고 반영합니다.</p>';
+    }
+    if (uf.length) {
+      h += "<h3>올린 뒤 주소 넣기 — 클실장이 읽고 등록부·링크를 채웁니다</h3>" + uf.map(function (f) {
         var val = draftOf("url", x.id, f.key, u[f.key] || ""), dr = S.drafts[dk("url", x.id, f.key)] != null;
         return '<div class="field' + (val ? " filled" : "") + (dr ? " draft" : "") + '"><label>' + esc(f.label) + '</label><input type="url" inputmode="url" placeholder="' + esc(f.ph || "https://cafe.naver.com/freetourincebu/…") + '" value="' + esc(val) + '" data-act="url" data-id="' + id + '" data-k="' + esc(f.key) + '"></div>';
       }).join("");
@@ -661,7 +699,7 @@
     }
     h += '<h3>클실장에게 메모</h3><textarea data-act="note" data-id="' + id + '" placeholder="예: 이건 다음 주로 / 사진 바꿔 줘">' + esc(draftOf("note", x.id, "", x.note || "")) + "</textarea>";
     h += '<div class="req"><button class="btn sm ghost" data-act="req" data-id="' + id + '">✎ 고칠 것 있으면 — 이 할 일 통째로 복사</button><span class="note">새 대화창에 붙여넣고 고칠 점만 적으시면 클실장이 묻지 않고 고쳐서 여기에 다시 올립니다. 문단 하나만이면 줄 끝 ⧉</span></div>';
-    h += '<div class="foot2">' + (x.status === "done" ? '<button class="btn sm ghost" data-act="toggle" data-id="' + id + '">다시 할 일로</button>' :
+    h += '<div class="foot2">' + (x.status === "done" || x.status === "cancel" ? '<button class="btn sm ghost" data-act="toggle" data-id="' + id + '">다시 할 일로</button>' :
       '<button class="btn ok" data-act="toggle" data-id="' + id + '">✓ 했어요</button><button class="btn sm ghost" data-act="snooze" data-n="1" data-id="' + id + '">내일로</button><button class="btn sm ghost" data-act="snooze" data-n="7" data-id="' + id + '">다음 주로</button>' +
       (x.snoozeTo ? '<button class="btn sm ghost" data-act="unsnooze" data-id="' + id + '">미루기 취소</button>' : "")) +
       '<span class="src">' + (x.src ? "출처: " + esc(x.src) : "") + (x.after ? (x.src ? " · " : "") + "끝나면 클실장이: " + esc(x.after) : "") + "</span></div>";
@@ -756,15 +794,26 @@
     Object.keys(S.items).forEach(function (k) { var x = S.items[k]; if (x.kind === "log" || !x.ideas) return; x.ideas.forEach(function (d, i) { out.push({ x: x, d: d, i: i, r: (x.react || {})[i] }); }); });
     return out.sort(function (a, b) { return (b.x.t0 || 0) - (a.x.t0 || 0) || a.i - b.i; });
   }
-  function freshIdeas() { return allIdeas().filter(function (e) { return !e.r && e.x.status !== "cancel" && !(e.x.kind === "task" && e.x.status === "done"); }); }
+  /* 답 없이 지나간 제안(PT-20) — 지우지 않고 💡 화면의 '지난 제안'으로 접어 둔다(새 숫자에서만 빠짐, 펼쳐서 언제든 답할 수 있음).
+     사장님 결정(원장 261124-72) "30일 지나면": 올라온 지 IDEA_KEEP 일이 지나도록 답이 없는 것.
+     취소된 일·사장님이 끝낸 할 일에 붙은 것은 예전부터 새 숫자에서 빠졌다 — 예전엔 💡 화면 어디에도 안 보였는데 이제 여기 모인다 */
+  var IDEA_KEEP = 30;
+  function ideaOld(e) {
+    var x = e.x;
+    if (x.status === "cancel" || (x.kind === "task" && x.status === "done")) return true;
+    return IDEA_KEEP > 0 && (x.t0 || 0) > 0 && x.t0 < Date.now() - IDEA_KEEP * 864e5;
+  }
+  function freshIdeas() { return allIdeas().filter(function (e) { return !e.r && !ideaOld(e); }); }
   function viewIdeas() {
     if (!sess) return needLogin();
     var all = allIdeas(), f = S.ifilter || "전체";
     var shown = all.filter(function (e) { return f === "전체" || (f === "아이디어" ? e.d.t === "아이디어" : e.d.t !== "아이디어"); });
     var h = '<h1>💡 클실장 제안·아이디어</h1><p class="note" style="margin-top:-4px">일마다 클실장이 낸 제안과 아이디어를 모았습니다. [좋아요, 진행해]를 누르시면 클실장이 다음 작업 때 바로 진행하고, 더 얘기하고 싶으면 ⧉로 복사해 새 대화창에 붙여넣으세요.</p>';
     h += '<div class="chips">' + ["전체", "아이디어", "제안"].map(function (c) { return '<button class="chip' + (f === c ? " on" : "") + '" data-ifilter="' + c + '">' + (c === "아이디어" ? "💡 아이디어" : c === "제안" ? "실장 제안" : "전체") + "</button>"; }).join("") + "</div>";
-    [["", "새로 온 것", "아직 답하지 않은 것"], ["진행", "진행하기로 한 것", "클실장이 진행합니다"], ["보류", "나중에", ""], ["안 함", "안 하기로 한 것", ""]].forEach(function (g) {
-      var xs = shown.filter(function (e) { return (e.r || "") === g[0] && (g[0] || !(e.x.kind === "task" && e.x.status === "done")); });
+    var oldSub = (IDEA_KEEP > 0 ? "올라온 지 " + IDEA_KEEP + "일 넘게 답이 없었거나 " : "") + "끝낸·취소된 할 일에 붙은 것 — 지우지 않고 모아 둡니다, 지금 답하셔도 됩니다";
+    if (all.length && f === "전체" && !freshIdeas().length) h += '<div class="empty">새로 온 제안은 다 보셨습니다. 지난 제안은 아래에서 펼쳐 보실 수 있습니다.</div>';
+    [["", "새로 온 것", "아직 답하지 않은 것"], ["old", "지난 제안", oldSub], ["진행", "진행하기로 한 것", "클실장이 진행합니다"], ["보류", "나중에", ""], ["안 함", "안 하기로 한 것", ""]].forEach(function (g) {
+      var xs = shown.filter(function (e) { return g[0] === "old" ? !e.r && ideaOld(e) : g[0] ? e.r === g[0] : !e.r && !ideaOld(e); });
       if (!xs.length) return;
       h += '<div class="sec"><h2>' + g[1] + '</h2><span class="cnt">' + xs.length + "건" + (g[2] ? " · " + g[2] : "") + "</span></div>";
       var body = '<div class="ideas big">' + xs.map(function (e) {
@@ -783,6 +832,7 @@
     if (x.why) L.push("설명: " + x.why);
     if (x.steps && x.steps.length) { L.push("순서:"); x.steps.forEach(function (s, i) { L.push((i + 1) + ". " + s); }); }
     if (x.choice) L.push("결정: " + (x.choice.q || "") + " [" + (x.choice.opts || []).join(" / ") + "]");
+    qList(x).forEach(function (q) { var v = (x.urls || {})[q.key]; L.push("질문: " + q.q + (v ? " → 내 답: " + v : "")); });
     var files = (x.links || []).concat(x.images || []).map(function (l) { return l.path || l.url; }).filter(Boolean);
     if (files.length) L.push("관련 파일: " + files.join(" , "));
     if (x.src) L.push("출처: " + x.src);
@@ -790,6 +840,35 @@
     return L.join("\n") + "\n\n고칠 점: ";
   }
   function linkify(s) { return esc(s).replace(/https?:\/\/[^\s)]+/g, function (u) { return '<a href="' + u + '" target="_blank" rel="noopener">' + u + "</a>"; }); }
+
+  /* ---------- 클실장 질문 칸(2026-11-24 전수조사 PT-12) ----------
+     예전엔 질문 답을 '올린 주소' 칸(fields, 주소 자판)으로 받아 '한 일'에 깨진 링크로 보였다.
+     qs[{key,q,ph,need}] = 질문, fields 중 주소가 아닌 것(예시가 http 로 시작하지 않고 이름에 '주소·링크'가 없는 것)도 질문으로 본다(f.t 로 고정 가능).
+     답은 그대로 urls[key] — 저장·합치기 길은 주소와 같다. http 로 시작하지 않는 값은 링크가 아니라 글로 보인다. */
+  function isQField(f) { if (f.t === "q") return true; if (f.t === "url") return false; return !(/^https?:/i.test(f.ph || "") || /주소|링크|url/i.test(f.label || "")); }
+  function qList(x) {
+    var out = [], seen = {};
+    (Array.isArray(x.qs) ? x.qs : []).forEach(function (q) { if (q && q.key && !seen[q.key]) { seen[q.key] = 1; out.push({ key: q.key, q: q.q || q.label || q.key, ph: q.ph, need: q.need }); } });
+    (Array.isArray(x.fields) ? x.fields : []).forEach(function (f) { if (f && f.key && !seen[f.key] && isQField(f)) { seen[f.key] = 1; out.push({ key: f.key, q: f.label || f.key, ph: f.ph, need: f.need }); } });
+    return out;
+  }
+  function urlFields(x) { var qk = {}; qList(x).forEach(function (q) { qk[q.key] = 1; }); return (Array.isArray(x.fields) ? x.fields : []).filter(function (f) { return f && f.key && !qk[f.key]; }); }
+  function isLink(v) { return /^https?:\/\/\S+$/i.test(String(v == null ? "" : v).trim()); }
+  function labelOf(x, k) {
+    var q = qList(x).filter(function (e) { return e.key === k; })[0]; if (q) return q.q;
+    var f = (Array.isArray(x.fields) ? x.fields : []).filter(function (e) { return e && e.key === k; })[0]; return f ? f.label || k : k;
+  }
+  function cut(s, n) { s = String(s || ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+  /* '한 일'·찾기에 보일 주소(링크)와 질문 답(글) */
+  function answersOf(x) {
+    var u = x.urls || {}, links = [], qa = [];
+    Object.keys(u).forEach(function (k) {
+      var v = u[k]; if (v == null || v === "") return; v = String(v);
+      if (isLink(v)) links.push('<a href="' + esc(v.trim()) + '" target="_blank" rel="noopener">' + esc(cut(labelOf(x, k), 60)) + "</a>");
+      else qa.push('<div class="note qa1" title="' + esc(labelOf(x, k)) + '"><span>' + esc(cut(labelOf(x, k), 60)) + "</span> → <b>" + esc(v) + "</b></div>");
+    });
+    return (links.length ? '<div class="note">' + links.join(" · ") + "</div>" : "") + qa.join("");
+  }
 
   function months(arr, key) { var m = {}; arr.forEach(function (x) { var d = (x[key] || "").slice(0, 7); if (d) m[d] = 1; }); return Object.keys(m).sort().reverse(); }
   function viewDone() {
@@ -801,15 +880,22 @@
     rows.sort(function (a, b) { return (b.doneAt || "").localeCompare(a.doneAt || ""); });
     var ms = months(src.concat(loc), "doneAt"); if (ms.indexOf(ymd().slice(0, 7)) < 0) ms.unshift(ymd().slice(0, 7));
     var h = '<h1>사장님이 한 일</h1><div class="card"><div class="grid2"><input class="search" id="dq" placeholder="제목으로 찾기" value="' + esc(S.dq) + '"><select id="dmonth"><option value="">모든 달</option>' + ms.map(function (m) { return '<option value="' + m + '"' + (S.dmonth === m ? " selected" : "") + ">" + m.replace("-", "년 ") + "월</option>"; }).join("") + '</select></div><p class="note" style="margin:6px 0 0">이 기기에는 최근 ' + KEEP_DAYS + '일만 둡니다. 그보다 오래된 일은 <button class="btn sm ghost" data-act="rsearch" data-k="done">서버에서 찾기</button>' + (S.rbusy ? " 찾는 중…" : "") + "</p></div>";
-    if (!rows.length) return h + '<div class="empty">끝낸 일이 없습니다.</div>';
+    /* 취소된 일(PT-19) — 원장 취소·클실장 취소로 할 일·한 일 어디에도 안 보이던 것. 사장님 메모가 있어도 여기서 보이고 되살릴 수 있다 */
+    var cx = Object.keys(S.items).map(function (k) { return S.items[k]; }).filter(function (x) { return x.kind === "task" && x.status === "cancel"; }).sort(function (a, b) { return (b.doneAt || "").localeCompare(a.doneAt || "") || (b.t0 || 0) - (a.t0 || 0); });
+    var cbox = cx.length ? '<div class="sec"><h2>취소된 일</h2><span class="cnt">' + cx.length + "건 · 클실장이 취소한 일 — 다시 하실 거면 [다시 할 일로]</span></div><details" + (S.open.sec_cancel ? " open" : "") + ' data-sec="cancel"><summary class="note">펼쳐 보기</summary><div class="card list">' + cx.map(function (x) {
+      return '<div class="row1"><div class="d">' + md((x.doneAt || "").slice(0, 10)) + '</div><div class="grow"><span class="area">취소됨</span>' + esc(x.title) + (x.note ? '<div class="note">내 메모: ' + esc(x.note) + "</div>" : "") + (x.doneNote ? '<div class="note">' + esc(cut(x.doneNote, 120)) + "</div>" : "") +
+        '</div><button class="btn sm ghost" data-act="undo" data-id="' + esc(x.id) + '">다시 할 일로</button></div>';
+    }).join("") + "</div></details>" : "";
+    if (!rows.length) return h + '<div class="empty">끝낸 일이 없습니다.</div>' + cbox;
     var last = "";
     h += '<div class="card list">' + rows.map(function (x) {
-      var d = (x.doneAt || "").slice(0, 10), u = x.urls || {}, links = Object.keys(u).filter(function (k) { return u[k]; }).map(function (k) { return '<a href="' + esc(u[k]) + '" target="_blank" rel="noopener">' + esc(((x.fields || []).filter(function (f) { return f.key === k; })[0] || { label: k }).label) + "</a>"; });
-      var r = '<div class="row1"><div class="d">' + (d !== last ? md(d) : "") + '</div><div class="grow"><span class="area">' + esc((CAT[x.cat] || CAT["기타"]).label) + "</span>" + esc(x.title) + (links.length ? '<div class="note">' + links.join(" · ") + "</div>" : "") + (x.answer ? '<div class="note">답: ' + esc([x.answer.pick, x.answer.text].filter(Boolean).join(" / ")) + "</div>" : "") +
+      var d = (x.doneAt || "").slice(0, 10);
+      // 올린 주소는 링크로, 질문 답(http 로 시작하지 않는 값)은 'Q → 답' 글로 — 예전엔 답이 깨진 링크로 보였다(PT-12)
+      var r = '<div class="row1"><div class="d">' + (d !== last ? md(d) : "") + '</div><div class="grow"><span class="area">' + esc((CAT[x.cat] || CAT["기타"]).label) + "</span>" + esc(x.title) + answersOf(x) + (x.answer ? '<div class="note">답: ' + esc([x.answer.pick, x.answer.text].filter(Boolean).join(" / ")) + "</div>" : "") +
         '</div><button class="btn sm ghost" data-act="undo" data-id="' + esc(x.id) + '">되돌리기</button></div>';
       last = d; return r;
     }).join("") + "</div>";
-    return h;
+    return h + cbox;
   }
   function viewKl() {
     if (!sess) return needLogin();
@@ -836,7 +922,9 @@
           (x.detail ? '<div class="note">' + esc(x.detail) + "</div>" : "") + ideasBox(x) + (ts.length ? '<div class="note">사장님 할 일: ' + ts.join(" · ") + "</div>" : "") + "</div></div>";
       }).join("") + "</div></div>";
     });
-    h += '<div class="card"><h2>클실장이 맡고 있는 일 ' + kt.length + "건</h2>" + (kt.length ? '<div class="list">' + kt.map(function (x) { return '<div class="row1"><div class="d">' + (x.due ? md(x.due) : "") + '</div><div class="grow"><span class="area">' + esc(x.area || "") + "</span>" + esc(x.title) + (x.why ? '<div class="note">' + esc(x.why) + "</div>" : "") + "</div></div>"; }).join("") + "</div>" : '<p class="note">지금 맡은 일이 없습니다.</p>') + "</div>";
+    /* 기한 지난 클실장 일은 빨간 '기한 지남'(PT-21) — 날짜순이라 맨 위에 모인다 */
+    var td0 = today(), klate = kt.filter(function (x) { return x.due && x.due < td0; }).length;
+    h += '<div class="card"><h2>클실장이 맡고 있는 일 ' + kt.length + "건" + (klate ? ' <span class="due late">기한 지남 ' + klate + "</span>" : "") + "</h2>" + (kt.length ? '<div class="list">' + kt.map(function (x) { var lt = x.due && x.due < td0; return '<div class="row1"><div class="d' + (lt ? " late" : "") + '">' + (x.due ? md(x.due) : "") + '</div><div class="grow"><span class="area">' + esc(x.area || "") + "</span>" + (lt ? '<span class="badge stall">기한 지남</span> ' : "") + esc(x.title) + (x.why ? '<div class="note">' + esc(x.why) + "</div>" : "") + "</div></div>"; }).join("") + "</div>" : '<p class="note">지금 맡은 일이 없습니다.</p>') + "</div>";
     var ar = Object.keys(areas).sort(function (a, b) { return areas[b] - areas[a]; });
     var ms = months(src.concat(loc), "date");
     h += '<div class="card"><h2>클실장이 한 일 — 분야별</h2><div class="chips"><button class="chip' + (S.karea === "전체" ? " on" : "") + '" data-karea="전체">전체</button>' + ar.map(function (a) { return '<button class="chip' + (S.karea === a ? " on" : "") + '" data-karea="' + esc(a) + '">' + esc(a) + " " + areas[a] + "</button>"; }).join("") + "</div>" +
@@ -887,7 +975,7 @@
       var n = pendingCount();
       if (n && !window.confirm("아직 서버에 안 올라간 할 일이 " + n + "건 있습니다(체크·메모·답 등).\n\n[확인] 이 기기에 따로 보관하고 로그아웃합니다 — 같은 계정으로 다시 로그인하면 그때 올라갑니다.\n[취소] 로그아웃하지 않습니다 — 인터넷 연결을 확인한 뒤 [지금 동기화]를 먼저 눌러 주세요.")) { msg("로그아웃을 취소했습니다 — 안 올라간 것 " + n + "건"); return; }
       save();   // 지금 계정의 안 올라간 것을 pend 에 확실히 남긴다
-      setSess(null); S.items = {}; S.dirty = {}; S.since = "";
+      setSess(null); LS.set("expired", null); S.items = {}; S.dirty = {}; S.since = "";
       LS.set("items", S.items); LS.set("dirty", S.dirty); LS.set("since", "");   // pend 는 건드리지 않는다
       render();
       if (n) toast("안 올라간 " + n + "건은 이 기기에 보관했습니다 — 다시 로그인하면 올라갑니다");
@@ -929,18 +1017,19 @@
     if (a === "goto") { ev.preventDefault(); goTask(id); return; }
     /* '한 일'의 되돌리기는 되돌리기만 한다(누를 때마다 완료↔할 일이 바뀌지 않게) — 되돌린 뒤 그 할 일이 어디 있는지 바로 보여 준다 (원장 261121-50) */
     if (a === "undo" && x) {
-      if (x.status === "done") restoreTask(id);
+      if (x.status === "done" || x.status === "cancel") restoreTask(id);
       else toast("이미 할 일에 있습니다", { label: "할 일에서 보기", fn: function () { goTask(id); } });
       return;
     }
     if (a === "toggle" && x) {
-      if (x.status === "done") restoreTask(id);
-      else { var miss = (x.fields || []).filter(function (f) { return f.need && !((x.urls || {})[f.key]); }); S.open[id] = false; if (S.view === "find") { clearFind(); S.view = "todo"; LS.set("view", "todo"); } setUser(id, { status: "done", doneAt: nowIso(), doneBy: "사장님" }); window.scrollTo(0, 0); LS.set("scroll", 0); toast(miss.length ? "완료! 올린 주소도 넣어 주시면 클실장이 링크를 채웁니다" : "완료했습니다", { label: "되돌리기", fn: function () { restoreTask(id); } }); }
+      if (x.status === "done" || x.status === "cancel") restoreTask(id);   // 취소된 일도 [다시 할 일로](PT-19)
+      else if (t.getAttribute("data-head") && HEAD_BOX === "ask" && !window.confirm("「" + cut(x.title, 40) + "」\n\n이 할 일을 끝낸 것으로 '한 일'로 넘길까요?")) return;
+      else { var uu0 = x.urls || {}, miss = urlFields(x).filter(function (f) { return f.need && !uu0[f.key]; }), missQ = qList(x).filter(function (q) { return q.need && !uu0[q.key]; }); S.open[id] = false; if (S.view === "find") { clearFind(); S.view = "todo"; LS.set("view", "todo"); } setUser(id, { status: "done", doneAt: nowIso(), doneBy: "사장님" }); window.scrollTo(0, 0); LS.set("scroll", 0); toast(miss.length ? "완료! 올린 주소도 넣어 주시면 클실장이 링크를 채웁니다" : missQ.length ? "완료! 질문 답도 적어 주시면 클실장이 반영합니다" : "완료했습니다", { label: "되돌리기", fn: function () { restoreTask(id); } }); }
       return;
     }
     if (a === "snooze" && x) { var n = +t.getAttribute("data-n"); setUser(id, { snoozeTo: addDays(today(), n) }); S.open[id] = false; toast(md(addDays(today(), n)) + "로 미뤘습니다", { label: "되돌리기", fn: function () { setUser(id, { snoozeTo: null }); } }); return; }
     if (a === "unsnooze" && x) { setUser(id, { snoozeTo: null }); return; }
-    if (a === "copy" && x) { copyText(x.copies[+t.getAttribute("data-i")].text); return; }
+    if (a === "copy" && x) { ev.preventDefault(); copyText(x.copies[+t.getAttribute("data-i")].text); return; }
     if (a === "react" && x) { var rv = Object.assign({}, x.react || {}), ii = t.getAttribute("data-i"), vv = t.getAttribute("data-v"); if (rv[ii] === vv) delete rv[ii]; else rv[ii] = vv; setUser(id, { react: rv }); toast(rv[ii] === "진행" ? "좋습니다 — 클실장이 다음 작업 때 진행합니다" : rv[ii] ? "기록했습니다" : "답을 지웠습니다"); return; }
     if (a === "ideacopy" && x) { var dd = x.ideas[+t.getAttribute("data-i")]; copyText("[필투두 아이디어] " + x.id + " #" + t.getAttribute("data-i") + "\n어디서: " + x.title + "\n" + (dd.t === "아이디어" ? "아이디어" : "실장 제안") + ": " + dd.text + "\n\n내 생각: ").then(function () { toast("복사했습니다 — 새 대화창에 붙여넣고 생각을 적어 주세요"); }); return; }
     if (a === "ckseen" && x) {
@@ -968,7 +1057,7 @@
       var em = ($("#em").value || "").trim(), pw = $("#pw").value || "";
       if (!em || !pw) { msg("이메일과 비밀번호를 넣어 주세요."); return; }
       msg("로그인 중…");
-      api("/auth/v1/token?grant_type=password", { method: "POST", body: { email: em, password: pw } }).then(function (j) { setSess(j); var nb = restorePend(); S.view = "todo"; LS.set("view", "todo"); render(); doSync(); if (nb) toast("지난번에 못 올린 것 " + nb + "건을 다시 올립니다"); }, function (e) { msg("로그인 실패: " + koErr(e.message)); });
+      api("/auth/v1/token?grant_type=password", { method: "POST", body: { email: em, password: pw } }).then(function (j) { setSess(j); LS.set("expired", null); var nb = restorePend(); S.view = "todo"; LS.set("view", "todo"); render(); doSync(); if (nb) toast("지난번에 못 올린 것 " + nb + "건을 다시 올립니다"); }, function (e) { msg("로그인 실패: " + koErr(e.message)); });
     }
   });
   document.addEventListener("change", function (ev) {
@@ -978,11 +1067,11 @@
     if (!x) return;
     if (a === "url" || a === "note" || a === "ans") { var dkey = dk(a, id, a === "url" ? t.getAttribute("data-k") : ""); if (S.drafts[dkey] != null) { delete S.drafts[dkey]; LS.set("drafts", S.drafts); markSave(); } }
     if (a === "step") { var ck = Object.assign({}, x.checks || {}); ck[t.getAttribute("data-i")] = t.checked; setUser(id, { checks: ck }); return; }
-    if (a === "url") { var u = Object.assign({}, x.urls || {}); u[t.getAttribute("data-k")] = t.value.trim(); setUser(id, { urls: u }); savedToast("주소를 저장했습니다"); return; }
+    if (a === "url") { var u = Object.assign({}, x.urls || {}); u[t.getAttribute("data-k")] = t.value.trim(); setUser(id, { urls: u }); savedToast(t.getAttribute("data-q") ? "답을 저장했습니다 — 할 일을 다 마치면 맨 아래 [✓ 했어요]를 눌러 주세요" : "주소를 저장했습니다"); return; }
     if (a === "note") { setUser(id, { note: t.value }, true); savedToast("메모를 저장했습니다"); return; }
     if (a === "ans") { var an = Object.assign({}, x.answer || {}); an.text = t.value.trim(); an.at = nowIso(); setUser(id, { answer: an }); savedToast("답을 저장했습니다 — 할 일을 다 마치면 맨 아래 [✓ 했어요]를 눌러 주세요"); return; }   // 11-22 저장만(원장 261122-45)
   });
-  document.addEventListener("toggle", function (ev) { var s = ev.target.getAttribute && ev.target.getAttribute("data-sec"); if (s) S.open["sec_" + s] = ev.target.open; var s2 = ev.target.getAttribute && ev.target.getAttribute("data-isec"); if (s2) S.open["isec_" + s2] = ev.target.open; if (s || s2) LS.set("open", S.open); }, true);
+  document.addEventListener("toggle", function (ev) { var s = ev.target.getAttribute && ev.target.getAttribute("data-sec"); if (s) S.open["sec_" + s] = ev.target.open; var s2 = ev.target.getAttribute && ev.target.getAttribute("data-isec"); if (s2) S.open["isec_" + s2] = ev.target.open; var s3 = ev.target.getAttribute && ev.target.getAttribute("data-cp"); if (s3) { if (ev.target.open) S.open["cp|" + s3] = true; else delete S.open["cp|" + s3]; } if (s || s2 || s3) LS.set("open", S.open); }, true);
   var st = 0;
   var frt = 0;
   /* 찾기 칸 글자 → 찾기 화면. 글자를 칠 때(input)·한글 조합이 끝날 때(compositionend)·Enter 때 모두 같은 길로 (원장 261121-50) */
@@ -1048,6 +1137,7 @@
   window.PT_BUILD = window.PT_BUILD || (typeof PT_BUILD !== "undefined" ? PT_BUILD : "");
   if (sess) restorePend();   // 지난번에 못 올린 것(저장 공간 부족 등)부터 되살린다
   renderBiz(); render(); markSave(); checkLocal(); if (sess) doSync(); badge();
-  window.addEventListener("online", function () { doSync(); });   // 인터넷이 다시 되면 바로 올린다
+  window.addEventListener("online", function () { render(); doSync(); });   // 인터넷이 다시 되면 바로 올린다
+  window.addEventListener("offline", function () { render(); });   // 끊기면 맨 위 띠(PT-17)
   (function () { var sy = LS.get("scroll", 0); if (sy > 0) setTimeout(function () { window.scrollTo(0, sy); }, 60); })();  // 저장해 둔 보던 자리로
 })();
