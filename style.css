@@ -292,3 +292,11 @@ details.copy:not([open]) > summary { border-bottom: 0; }
   .biz::after, .chkbtn::after { content: ""; position: absolute; inset: -5px -2px; }
   .cktask a, a.from { display: inline-block; padding: 5px 0; }
 }
+
+/* 2026-11-25 T5 — 💡 지난 제안의 '채팅으로 답하신 것' 한 줄 */
+.ansline{margin:10px 0 2px;padding:6px 10px;border-left:3px solid #c8a24a;background:#fffaf0;color:#5a4a26;font-size:13px;line-height:1.5;border-radius:0 8px 8px 0;word-break:break-word}
+.ansline .from{color:#999;font-size:12px}
+
+/* 2026-11-25 T5 PT-I6 — 폰 사진(사본) */
+.img .btns a.btn { text-decoration: none; display: inline-flex; align-items: center; }
+.img .noimg[data-pimg] { line-height: 1.45; }

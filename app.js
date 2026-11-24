@@ -541,8 +541,56 @@
       return new Promise(function (ok) { c.toBlob(ok, "image/png"); });
     });
   }
+  /* ---------- 폰에서 사진(2026-11-25 전수조사 PT-I6) ----------
+     PC 도우미가 열린 할 일의 사진을 작게 줄여 Supabase pt_imgs(사장님 계정만 읽기)에 올려 둔다.
+     도우미가 없는 기기(폰·다른 PC)는 그 사본을 받아 보여 주고, [저장](내려받기)·[복사]·크게 보기(길게 눌러 저장)가 된다.
+     사본은 이 창 안에서만 기억하고(기기에 쌓지 않음), 할 일·사장님 칸과는 따로다. */
+  var PIMG = {}, PIMG_MISS = {}, PIMG_BUSY = {}, PIMG_OFF = false;
+  function pimgName(p) { return String(p || "").split("/").pop() || "사진.jpg"; }
+  function pimgBox(m) {
+    var p = m.path, u = PIMG[p], miss = PIMG_MISS[p] || PIMG_OFF;
+    var ph = u ? '<div class="ph" data-act="zoom" data-src="' + esc(u.url) + '" data-pimg="' + esc(p) + '" style="background-image:url(\'' + esc(u.url) + '\')"></div>'
+      : '<div class="noimg" data-pimg="' + esc(p) + '">' + (miss ? "사진은 PC 필투두에서 보입니다(폰용 사본이 아직 없습니다 — PC 도우미가 켜지면 몇 분 안에 올라옵니다)" : "사진 불러오는 중…") + "</div>";
+    return '<div class="img">' + ph + '<div class="cap">' + esc(m.label || pimgName(p)) + '</div><div class="btns">' +
+      '<button class="btn sm' + (u ? "" : " dim") + '" data-act="img" data-p="' + esc(p) + '">복사</button>' +
+      (u ? '<a class="btn sm ghost" href="' + esc(u.url) + '" download="' + esc(u.name) + '">저장</a>' : "") + "</div></div>";
+  }
+  function pimgQuote(p) { return '"' + String(p).replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"'; }
+  function loadPimgs() {
+    if (S.local || !sess || PIMG_OFF) return;
+    var want = [];
+    document.querySelectorAll("#app [data-pimg]").forEach(function (el) { var p = el.getAttribute("data-pimg"); if (!PIMG[p] && !PIMG_MISS[p] && !PIMG_BUSY[p] && want.indexOf(p) < 0) want.push(p); });
+    if (!want.length) return;
+    want.forEach(function (p) { PIMG_BUSY[p] = 1; });
+    fresh().then(function () { return api("/rest/v1/pt_imgs?select=path,mime,b64&path=in.(" + encodeURIComponent(want.map(pimgQuote).join(",")) + ")", { auth: true }); }).then(function (rows) {
+      (rows || []).forEach(function (r) {
+        try {
+          var bin = atob(r.b64), arr = new Uint8Array(bin.length);
+          for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+          var blob = new Blob([arr], { type: r.mime || "image/jpeg" });
+          var nm = pimgName(r.path); if (/jpe?g/.test(r.mime || "") && !/\.jpe?g$/i.test(nm)) nm = nm.replace(/\.\w+$/, "") + ".jpg";
+          PIMG[r.path] = { url: URL.createObjectURL(blob), blob: blob, name: nm };
+        } catch (e) { PIMG_MISS[r.path] = 1; }
+      });
+      want.forEach(function (p) { delete PIMG_BUSY[p]; if (!PIMG[p]) PIMG_MISS[p] = 1; });
+      render();
+    }, function (e) {
+      want.forEach(function (p) { delete PIMG_BUSY[p]; });
+      if (e && (e.status === 404 || /pt_imgs/.test(e.message || ""))) PIMG_OFF = true;  // 서버에 사진 칸이 아직 없으면 이번 창에선 다시 묻지 않는다
+      else want.forEach(function (p) { PIMG_MISS[p] = 1; });
+      render();
+    });
+  }
   function copyImage(p) {
-    if (!S.local) { toast("사진은 PC 필투두(도우미 켜진 PC)에서 보이고 복사됩니다 — 폰에서 꺼내는 기능은 아직 없습니다"); return; }
+    if (!S.local) {
+      var u = PIMG[p];
+      if (!u) { toast(PIMG_MISS[p] || PIMG_OFF ? "이 사진은 아직 폰용 사본이 없습니다 — PC 필투두에서 복사해 주세요" : "사진을 불러오는 중입니다 — 잠시 뒤 다시 눌러 주세요"); return; }
+      if (!window.ClipboardItem || !navigator.clipboard || !navigator.clipboard.write) { toast("이 폰은 사진 복사를 못 합니다 — [저장]을 누르거나 사진을 크게 띄워 길게 눌러 저장하세요"); return; }
+      navigator.clipboard.write([new ClipboardItem({ "image/png": toPng(u.blob) })]).then(function () { toast("사진을 복사했습니다 — 붙여넣을 곳에서 길게 눌러 [붙여넣기]"); }, function () {
+        toast("사진 복사가 막혔습니다 — [저장]을 누르거나 사진을 크게 띄워 길게 눌러 저장하세요");
+      });
+      return;
+    }
     if (!window.ClipboardItem) { toast("이 브라우저는 사진 복사를 못 합니다 — 크롬·엣지를 써 주세요"); return; }
     var pr = fetch(fileUrl(p)).then(function (r) { if (!r.ok) throw new Error("사진을 찾지 못했습니다"); return r.blob(); }).then(toPng);
     navigator.clipboard.write([new ClipboardItem({ "image/png": pr })]).then(function () { toast("사진을 복사했습니다 — 카페 글쓰기에 붙여넣기(Ctrl+V)"); }, function () {
@@ -569,6 +617,7 @@
     var ni = $("#navIdea"); if (ni) { var fi = sess ? freshIdeas().length : 0; ni.textContent = fi; ni.style.display = fi ? "" : "none"; }
     chkBtn();
     $("#app").innerHTML = h;
+    loadPimgs();
     /* 폰: 2줄로 줄인 설명이 실제로 넘칠 때만 '… 더보기'(누르면 카드가 펼쳐진다) */
     if (window.matchMedia && window.matchMedia("(max-width: 560px)").matches) document.querySelectorAll("#app .why.clamp").forEach(function (el) { if (el.scrollHeight > el.clientHeight + 2) el.insertAdjacentHTML("afterend", '<div class="more">… 더보기</div>'); });
     $("#ver").textContent = "필투두 " + (window.PT_BUILD || "") + (S.local ? " · PC 도우미 연결됨" : "");
@@ -670,9 +719,9 @@
     }
     if (x.images && x.images.length) {
       h += "<h3>사진 — [복사] 누르고 바로 붙여넣기</h3><div class=\"imgs\">" + x.images.map(function (m) {
-        return '<div class="img">' + (S.local ? '<div class="ph" data-act="zoom" data-src="' + esc(fileUrl(m.path)) + '" style="background-image:url(\'' + esc(fileUrl(m.path)).replace(/'/g, "%27") + '\')"></div>' : '<div class="noimg">사진은 PC 필투두에서 보입니다</div>') +
-          // 폰에서도 [복사]를 누르면 왜 안 되는지 알려 준다(예전엔 눌리지도 않아 안내가 안 떴다 — PT-25)
-          '<div class="cap">' + esc(m.label || m.path.split("/").pop()) + '</div><div class="btns"><button class="btn sm' + (S.local ? "" : " dim") + '" data-act="img" data-p="' + esc(m.path) + '">복사</button>' + (S.local ? '<button class="btn sm ghost" data-act="folder" data-p="' + esc(m.path) + '">폴더</button>' : "") + "</div></div>";
+        if (!S.local) return pimgBox(m);  // 폰: PC 도우미가 올려 둔 사진 사본(PT-I6)
+        return '<div class="img"><div class="ph" data-act="zoom" data-src="' + esc(fileUrl(m.path)) + '" style="background-image:url(\'' + esc(fileUrl(m.path)).replace(/'/g, "%27") + '\')"></div>' +
+          '<div class="cap">' + esc(m.label || m.path.split("/").pop()) + '</div><div class="btns"><button class="btn sm" data-act="img" data-p="' + esc(m.path) + '">복사</button><button class="btn sm ghost" data-act="folder" data-p="' + esc(m.path) + '">폴더</button></div></div>';
       }).join("") + "</div>";
     }
     /* 클실장 질문(PT-12): qs[{key,q,ph,need}] + 주소가 아닌 옛 fields(질문을 주소 칸으로 받던 것)는 글 상자로 받는다.
@@ -796,11 +845,12 @@
   }
   /* 답 없이 지나간 제안(PT-20) — 지우지 않고 💡 화면의 '지난 제안'으로 접어 둔다(새 숫자에서만 빠짐, 펼쳐서 언제든 답할 수 있음).
      사장님 결정(원장 261124-72) "30일 지나면": 올라온 지 IDEA_KEEP 일이 지나도록 답이 없는 것.
-     취소된 일·사장님이 끝낸 할 일에 붙은 것은 예전부터 새 숫자에서 빠졌다 — 예전엔 💡 화면 어디에도 안 보였는데 이제 여기 모인다 */
+     취소된 일·사장님이 끝낸 할 일에 붙은 것은 예전부터 새 숫자에서 빠졌다 — 예전엔 💡 화면 어디에도 안 보였는데 이제 여기 모인다.
+     2026-11-25 사장님 결정(원장 261125-06): 💡 묶음(kind idea)도 클실장이 채팅 답을 받고 끝냈으면 같은 곳으로 — '채팅으로 답함' 한 줄(끝낼 때 적은 doneNote)을 붙인다 */
   var IDEA_KEEP = 30;
   function ideaOld(e) {
     var x = e.x;
-    if (x.status === "cancel" || (x.kind === "task" && x.status === "done")) return true;
+    if (x.status === "cancel" || x.status === "done") return true;
     return IDEA_KEEP > 0 && (x.t0 || 0) > 0 && x.t0 < Date.now() - IDEA_KEEP * 864e5;
   }
   function freshIdeas() { return allIdeas().filter(function (e) { return !e.r && !ideaOld(e); }); }
@@ -810,15 +860,21 @@
     var shown = all.filter(function (e) { return f === "전체" || (f === "아이디어" ? e.d.t === "아이디어" : e.d.t !== "아이디어"); });
     var h = '<h1>💡 클실장 제안·아이디어</h1><p class="note" style="margin-top:-4px">일마다 클실장이 낸 제안과 아이디어를 모았습니다. [좋아요, 진행해]를 누르시면 클실장이 다음 작업 때 바로 진행하고, 더 얘기하고 싶으면 ⧉로 복사해 새 대화창에 붙여넣으세요.</p>';
     h += '<div class="chips">' + ["전체", "아이디어", "제안"].map(function (c) { return '<button class="chip' + (f === c ? " on" : "") + '" data-ifilter="' + c + '">' + (c === "아이디어" ? "💡 아이디어" : c === "제안" ? "실장 제안" : "전체") + "</button>"; }).join("") + "</div>";
-    var oldSub = (IDEA_KEEP > 0 ? "올라온 지 " + IDEA_KEEP + "일 넘게 답이 없었거나 " : "") + "끝낸·취소된 할 일에 붙은 것 — 지우지 않고 모아 둡니다, 지금 답하셔도 됩니다";
+    var oldSub = (IDEA_KEEP > 0 ? "올라온 지 " + IDEA_KEEP + "일 넘게 답이 없었거나, " : "") + "채팅으로 답하셔서 클실장이 끝냈거나, 끝낸·취소된 할 일에 붙은 것 — 지우지 않고 모아 둡니다, 지금 답하셔도 됩니다";
     if (all.length && f === "전체" && !freshIdeas().length) h += '<div class="empty">새로 온 제안은 다 보셨습니다. 지난 제안은 아래에서 펼쳐 보실 수 있습니다.</div>';
     [["", "새로 온 것", "아직 답하지 않은 것"], ["old", "지난 제안", oldSub], ["진행", "진행하기로 한 것", "클실장이 진행합니다"], ["보류", "나중에", ""], ["안 함", "안 하기로 한 것", ""]].forEach(function (g) {
       var xs = shown.filter(function (e) { return g[0] === "old" ? !e.r && ideaOld(e) : g[0] ? e.r === g[0] : !e.r && !ideaOld(e); });
       if (!xs.length) return;
       h += '<div class="sec"><h2>' + g[1] + '</h2><span class="cnt">' + xs.length + "건" + (g[2] ? " · " + g[2] : "") + "</span></div>";
+      var seenAns = {};
       var body = '<div class="ideas big">' + xs.map(function (e) {
+        var ans = "";
+        if (g[0] === "old" && e.x.kind !== "task" && e.x.status === "done" && !seenAns[e.x.id]) {
+          seenAns[e.x.id] = 1;
+          ans = '<div class="ansline">💬 채팅으로 답하신 것 — ' + (e.x.doneNote ? linkify(cut(e.x.doneNote, 240)) : "클실장이 끝냈습니다") + (e.x.doneAt ? ' <span class="from">' + md(String(e.x.doneAt).slice(0, 10)) + "</span>" : "") + "</div>";
+        }
         var from = e.x.kind === "task" ? ' <a class="from" href="#c_' + esc(e.x.id) + '" data-act="goto" data-id="' + esc(e.x.id) + '">할 일: ' + esc(e.x.title) + "</a>" : ' <span class="from">' + esc(e.x.kind === "idea" ? (e.x.area || "새 아이디어") : e.x.title) + "</span>";
-        return ideaRow(e.x, e.d, e.i, e.r, from + (e.x.t0 ? ' <span class="from">' + md(ymd(new Date(e.x.t0))) + "</span>" : ""));
+        return ans + ideaRow(e.x, e.d, e.i, e.r, from + (e.x.t0 ? ' <span class="from">' + md(ymd(new Date(e.x.t0))) + "</span>" : ""));
       }).join("") + "</div>";
       h += g[0] ? "<details" + (S.open["isec_" + g[0]] ? " open" : "") + ' data-isec="' + g[0] + '"><summary class="note">펼쳐 보기</summary>' + body + "</details>" : body;
     });
